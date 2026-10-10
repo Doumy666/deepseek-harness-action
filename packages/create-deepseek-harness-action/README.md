@@ -23,12 +23,21 @@ GitHub **Settings → Secrets and variables → Actions** if you prefer.
 Commit and push each require a separate confirmation, both defaulting to **No**.
 The optional installer commit contains only `.github/workflows/dsh-review.yml`.
 It preserves your edits and untracked files, refuses existing staged changes,
-and runs no repository hooks, filters, validation scripts, or signing program. Its commits
-are unsigned; choose a manual commit if your repository requires hooks or signing.
+and its local commit runs no repository hooks, filters, validation scripts, or signing program.
+Commits and pushes are unsigned; choose manual publication if your repository requires hooks or signing.
 Push is a normal, non-force push of that exact commit. It requires the origin's
 single push URL to match the verified remote and the remote branch to match the commit's
 parent, so earlier unpublished or concurrent commits require manual reconciliation.
 It disables automatic tag following for that command; local Git settings are preserved.
+Before each remote read or push, it checks Git configuration names and scopes, including
+included files. Repository-local and worktree SSH commands, credential/askpass helpers and custom
+remote programs are refused; the local commit remains available for manual publication.
+Object-reading operations also check for repository alternate-reference programs before starting.
+Publication requires Git 2.45 or newer with `--no-lazy-fetch` support. It never fetches missing
+objects automatically; if a partial clone lacks required objects, fetch them yourself before
+rerunning. Push negotiation and recursive submodule publication are disabled.
+Git continues to use your trusted system/global authentication and SSH agent. Host-configured
+helpers remain your responsibility; the installer does not copy or log their configuration values.
 The workflow must reach the default branch before PR Review can start.
 
 Rerunning the same guided command resumes an identical generated workflow

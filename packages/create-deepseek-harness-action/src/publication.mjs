@@ -4,6 +4,17 @@ import { join } from "node:path";
 
 const WORKFLOW_PATH = ".github/workflows/dsh-review.yml";
 const SHA = /^[0-9a-f]{40}$/u;
+const OBJECT_COMMANDS = new Set([
+  "diff",
+  "rev-parse",
+  "read-tree",
+  "hash-object",
+  "update-index",
+  "write-tree",
+  "diff-tree",
+  "commit-tree",
+  "update-ref",
+]);
 const confirmed = (answer) => ["y", "yes"].includes(answer.trim().toLowerCase());
 
 /** Publish only the generated workflow, with separate local/remote consent. */
@@ -25,25 +36,74 @@ export async function publishReviewWorkflow({
   )
     return skipped;
   const temporary = await mkdtemp(join(tmpdir(), "dsh-installer-git-"));
-  const env = { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_ALLOW_PROTOCOL: "https:ssh" };
+  const env = {
+    ...process.env,
+    GIT_TERMINAL_PROMPT: "0",
+    GIT_ALLOW_PROTOCOL: "https:ssh",
+    GIT_NO_LAZY_FETCH: "1",
+  };
   let committed = false;
   const prefix = [
+    // Unlike an unknown env variable, an unsupported flag makes older Git fail closed.
+    "--no-lazy-fetch",
     "-c",
     `core.hooksPath=${temporary}`,
     "-c",
     "core.fsmonitor=false",
     "-c",
     "commit.gpgSign=false",
+    "-c",
+    "push.followTags=false",
+    "-c",
+    "push.negotiate=false",
   ];
   const git = async (args, input, index = false) => {
+    const transport = args[0] === "ls-remote" || args[0] === "push";
+    if (transport || OBJECT_COMMANDS.has(args[0])) await verifyProgramConfiguration(transport);
     const result = await invoke("git", [...prefix, ...args], root, input, {
       env: index ? { ...env, GIT_INDEX_FILE: join(temporary, "index") } : env,
     });
     if (result.exitCode !== 0)
       throw new Error(
-        "Git operation failed; check local Git identity, branch and permissions, then rerun.",
+        "Git operation failed; use Git with --no-lazy-fetch support and the required objects available locally, then check identity, branch and permissions before rerunning.",
       );
     return result.stdout.trim();
+  };
+  const verifyProgramConfiguration = async (transport) => {
+    // Names/scopes include inherited files without reading or copying auth values.
+    // The host's system/global helpers stay owned by Git; repository/worktree
+    // helpers require manual publication rather than executing with host access.
+    // Object operations also reject alternate-ref programs, without treating
+    // purely local publication as consent to run any authentication helper.
+    const metadata = await git([
+      "config",
+      "--includes",
+      "--show-scope",
+      "--name-only",
+      "--null",
+      "--list",
+    ]);
+    const fields = metadata.split("\0");
+    const denied = () => {
+      throw new Error(
+        `Git repository-scoped ${transport ? "transport" : "object command"} configuration is unsupported. Generated files and any completed local commit are preserved; inspect the configuration and publish manually, or configure trusted helpers at host scope.`,
+      );
+    };
+    if (fields.pop() !== "" || fields.length === 0 || fields.length % 2 !== 0) denied();
+    for (let index = 0; index < fields.length; index += 2) {
+      const scope = fields[index];
+      const key = fields[index + 1]?.toLowerCase();
+      if (!["system", "global", "local", "worktree", "command"].includes(scope) || !key) denied();
+      if (
+        ["local", "worktree"].includes(scope) &&
+        (key === "core.alternaterefscommand" ||
+          (transport &&
+            /^(?:core\.(?:sshcommand|gitproxy|askpass)|credential(?:\.[\s\S]+)?\.helper|remote\.[\s\S]+\.(?:vcs|uploadpack|receivepack))$/u.test(
+              key,
+            )))
+      )
+        denied();
+    }
   };
   const verifyPushDestination = async () => {
     const urls = (await git(["remote", "get-url", "--push", "--all", "origin"])).split("\n");
@@ -158,7 +218,7 @@ export async function publishReviewWorkflow({
         "Local branch changed before push. No push was attempted; inspect it before continuing.",
       );
     await verifyPushDestination();
-    await git(["-c", "push.followTags=false", "push", "origin", `${commit}:${ref}`]);
+    await git(["push", "--no-signed", "--recurse-submodules=no", "origin", `${commit}:${ref}`]);
     output.write(`Pushed the workflow commit to origin/${branch}.\n`);
     return { committed: true, pushed: true };
   } catch (error) {
