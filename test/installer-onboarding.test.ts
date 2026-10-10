@@ -76,6 +76,7 @@ function adapters(
     ghDefaultHost?: string;
     failSecret?: boolean;
     remoteAhead?: boolean;
+    remotePublished?: boolean;
     localRemote?: string;
     uncertainCleanup?: boolean;
     gitEnvironment?: NodeJS.ProcessEnv;
@@ -167,11 +168,15 @@ function adapters(
     if (gitOperation === "push" && settings.localRemote === undefined)
       return { exitCode: 0, stdout: "", stderr: "" };
     if (gitOperation === "ls-remote") {
-      const parent = await exec("git", ["rev-parse", "HEAD^"], { cwd: options.cwd });
+      const advertised = await exec(
+        "git",
+        ["rev-parse", settings.remotePublished ? "HEAD" : "HEAD^"],
+        { cwd: options.cwd },
+      );
       if (options.cwd !== undefined) await settings.afterRemoteRead?.(options.cwd);
       return {
         exitCode: 0,
-        stdout: `${settings.remoteAhead ? "f".repeat(40) : parent.stdout.trim()}\trefs/heads/main\n`,
+        stdout: `${settings.remoteAhead ? "f".repeat(40) : advertised.stdout.trim()}\trefs/heads/main\n`,
         stderr: "",
       };
     }
@@ -844,6 +849,125 @@ describe("installer guided first run", () => {
     expect(result.onboarding).toMatchObject({ committed: true, pushed: true });
     expect((await exec("git", ["rev-parse", "HEAD"], { cwd: root })).stdout.trim()).toBe(head);
     expect(resumed.calls.some((call) => call.args.includes("commit-tree"))).toBe(false);
+  });
+  it("recovers a cloned LF workflow commit with real CRLF checkout without rewriting or duplicating it", async () => {
+    const source = await project();
+    const workflow = ".github/workflows/dsh-review.yml";
+    const starter = (await readFile(join(templates, "dsh-review.yml"), "utf8")).replaceAll(
+      "\r\n",
+      "\n",
+    );
+    await mkdir(join(source, ".github", "workflows"), { recursive: true });
+    await writeFile(join(source, workflow), starter);
+    await exec("git", ["add", workflow], { cwd: source });
+    await exec("git", ["commit", "-m", "Configure the pinned Review workflow"], { cwd: source });
+    expect((await exec("git", ["show", `HEAD:${workflow}`], { cwd: source })).stdout).toBe(starter);
+    const root = await mkdtemp(join(suite, "crlf-clone-"));
+    await exec("git", [
+      "-c",
+      "protocol.file.allow=always",
+      "clone",
+      "--config",
+      "core.autocrlf=true",
+      "--no-local",
+      pathToFileURL(source).href,
+      root,
+    ]);
+    await exec("git", ["remote", "set-url", "origin", "https://github.com/example/sample.git"], {
+      cwd: root,
+    });
+    await exec("git", ["config", "user.name", "Installer Test"], { cwd: root });
+    await exec("git", ["config", "user.email", "installer@example.invalid"], { cwd: root });
+    const head = (await exec("git", ["rev-parse", "HEAD"], { cwd: root })).stdout.trim();
+    const checkedOut = await readFile(join(root, workflow), "utf8");
+    expect(checkedOut).toContain("\r\n");
+    expect(checkedOut.replaceAll("\r\n", "\n")).toBe(starter);
+    expect((await exec("git", ["config", "core.autocrlf"], { cwd: root })).stdout.trim()).toBe(
+      "true",
+    );
+    await writeFile(join(root, "README.md"), "unrelated user edit\r\n");
+    await writeFile(join(root, "notes.txt"), "untracked user file\r\n");
+    const status = (await exec("git", ["status", "--porcelain"], { cwd: root })).stdout;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      // Remote transport is the external seam; local Git uses the real CRLF clone.
+      const io = adapters(["y", "n", "y", "y"], { remotePublished: true });
+      const result = await runInstaller({
+        argv: [],
+        cwd: root,
+        input: Readable.from([]),
+        isTTY: true,
+        env: {},
+        templateDirectory: templates,
+        ...io,
+      });
+      expect(result.createdFiles).toEqual([]);
+      expect(result.onboarding).toMatchObject({ committed: true, pushed: true });
+      expect(io.calls.some((call) => call.gitOperation === "ls-remote")).toBe(true);
+      expect(io.calls.some((call) => call.gitOperation === "push")).toBe(false);
+      expect(io.calls.some((call) => call.gitOperation === "commit-tree")).toBe(false);
+      expect(io.output.text).toContain("already published; no push was repeated");
+    }
+    expect((await exec("git", ["rev-parse", "HEAD"], { cwd: root })).stdout.trim()).toBe(head);
+    expect((await exec("git", ["show", `HEAD:${workflow}`], { cwd: root })).stdout).toBe(starter);
+    expect(await readFile(join(root, workflow), "utf8")).toBe(checkedOut);
+    expect(await readFile(join(root, "README.md"), "utf8")).toBe("unrelated user edit\r\n");
+    expect(await readFile(join(root, "notes.txt"), "utf8")).toBe("untracked user file\r\n");
+    expect((await exec("git", ["status", "--porcelain"], { cwd: root })).stdout).toBe(status);
+    expect((await exec("git", ["config", "core.autocrlf"], { cwd: root })).stdout.trim()).toBe(
+      "true",
+    );
+  });
+  it("generates an LF workflow and Git blob from a CRLF starter template", async () => {
+    const root = await project();
+    const starter = (await readFile(join(templates, "dsh-review.yml"), "utf8")).replaceAll(
+      "\r\n",
+      "\n",
+    );
+    const crlfTemplates = await mkdtemp(join(suite, "crlf-templates-"));
+    await writeFile(join(crlfTemplates, "dsh-review.yml"), starter.replaceAll("\n", "\r\n"));
+    const io = adapters(["y", "n", "y", "n"]);
+    const result = await runInstaller({
+      argv: [],
+      cwd: root,
+      input: Readable.from([]),
+      isTTY: true,
+      env: {},
+      templateDirectory: crlfTemplates,
+      ...io,
+    });
+    const workflow = ".github/workflows/dsh-review.yml";
+    expect(result.createdFiles).toEqual([workflow]);
+    expect(result.onboarding).toMatchObject({ committed: true, pushed: false });
+    expect(await readFile(join(root, workflow), "utf8")).toBe(starter);
+    expect((await exec("git", ["show", `HEAD:${workflow}`], { cwd: root })).stdout).toBe(starter);
+  });
+  it("preserves and refuses a CRLF starter with an additional whitespace edit", async () => {
+    const root = await project();
+    const workflow = join(root, ".github/workflows/dsh-review.yml");
+    const starter = (await readFile(join(templates, "dsh-review.yml"), "utf8")).replaceAll(
+      "\r\n",
+      "\n",
+    );
+    const edited = starter.replaceAll("\n", "\r\n").replace("\r\n", " \r\n");
+    await mkdir(join(root, ".github", "workflows"), { recursive: true });
+    await writeFile(workflow, edited);
+    const head = (await exec("git", ["rev-parse", "HEAD"], { cwd: root })).stdout.trim();
+    const io = adapters(["y"]);
+    await expect(
+      runInstaller({
+        argv: [],
+        cwd: root,
+        input: Readable.from([]),
+        isTTY: true,
+        env: {},
+        templateDirectory: templates,
+        ...io,
+      }),
+    ).rejects.toThrow(/Refusing to overwrite existing workflow/u);
+    expect(await readFile(workflow, "utf8")).toBe(edited);
+    expect((await exec("git", ["rev-parse", "HEAD"], { cwd: root })).stdout.trim()).toBe(head);
+    expect(io.calls.some((call) => call.gitOperation === "commit-tree")).toBe(false);
+    expect(io.calls.some((call) => call.args[0] === "secret")).toBe(false);
   });
   it("pushes only the new workflow commit after a separate confirmation and parent binding", async () => {
     const root = await project();

@@ -3,6 +3,7 @@ import { isAbsolute, join, relative } from "node:path";
 import { runProcess } from "./process.mjs";
 import { createPrompter } from "./prompts.mjs";
 import { publishReviewWorkflow } from "./publication.mjs";
+import { canonicalWorkflowText } from "./workflow-text.mjs";
 
 function githubRepository(url) {
   const match =
@@ -187,9 +188,8 @@ export async function runGuidedSetup(options) {
       .toLowerCase();
     if (consent !== "" && consent !== "y" && consent !== "yes")
       return { mode: "review", dshMode: "controlled", createdFiles: [] };
-    const expectedContents = await readFile(
-      join(options.templateDirectory, "dsh-review.yml"),
-      "utf8",
+    const expectedContents = canonicalWorkflowText(
+      await readFile(join(options.templateDirectory, "dsh-review.yml"), "utf8"),
     );
     verifyReviewConfiguration(expectedContents);
     const createdFiles = await options.createWorkflow(root);

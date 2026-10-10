@@ -43,7 +43,12 @@ helpers remain your responsibility; the installer does not copy or log their con
 The workflow must reach the default branch before PR Review can start.
 
 Rerunning the same guided command resumes an identical generated workflow
-without overwriting it. It rechecks login and Secret names, preserves an existing
+without overwriting it. Content matching treats Git's LF/CRLF checkout conversion
+as equivalent; no other text differences are accepted. Existing file bytes and Git
+settings are preserved. Generated workflow text and Git blobs use LF, so a workflow
+committed with LF and checked out with CRLF reuses its existing commit. Reuse of a
+manually committed CRLF blob is not guaranteed.
+It rechecks login and Secret names, preserves an existing
 workflow-only commit, and checks whether that commit is already published before
 repeating a push. Modified/user-owned workflow files are preserved and require a
 manual merge. A successful configuration check covers the starter's immutable

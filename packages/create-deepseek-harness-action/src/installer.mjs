@@ -5,6 +5,7 @@ import { createInterface } from "node:readline/promises";
 
 import { INSTALLER_ACTION_INPUTS } from "./action-inputs.generated.mjs";
 import { runGuidedSetup } from "./guided.mjs";
+import { canonicalWorkflowText } from "./workflow-text.mjs";
 
 const DOCUMENTATION_URL =
   "https://github.com/Lixiaoyiao/deepseek-harness-action/blob/create-deepseek-harness-action-v0.6.0/docs/setup.md";
@@ -361,7 +362,7 @@ async function installWorkflows({
   templateDirectory,
   testCommands,
   containerImage,
-  preserveExact = false,
+  preserveGenerated = false,
 }) {
   const definitions = workflowDefinitions(mode, dshMode).map((definition) => ({
     ...definition,
@@ -386,13 +387,16 @@ async function installWorkflows({
   for (const definition of definitions) {
     if (await pathExists(definition.absoluteTarget)) {
       if (
-        preserveExact &&
+        preserveGenerated &&
         definitions.length === 1 &&
         definition.target.endsWith("dsh-review.yml")
       ) {
-        const expected = await readFile(join(templateDirectory, definition.source), "utf8");
+        const expected = canonicalWorkflowText(
+          await readFile(join(templateDirectory, definition.source), "utf8"),
+        );
         assertReleaseBuiltTemplate(expected, definition.source);
-        if ((await readFile(definition.absoluteTarget, "utf8")) === expected) return [];
+        if (canonicalWorkflowText(await readFile(definition.absoluteTarget, "utf8")) === expected)
+          return [];
       }
       conflicts.push(definition.target);
     }
@@ -406,7 +410,9 @@ async function installWorkflows({
   }
 
   for (const definition of definitions) {
-    let contents = await readFile(join(templateDirectory, definition.source), "utf8");
+    let contents = canonicalWorkflowText(
+      await readFile(join(templateDirectory, definition.source), "utf8"),
+    );
     assertReleaseBuiltTemplate(contents, definition.source);
     if (definition.target.endsWith("dsh-commands.yml")) {
       if (testCommands !== undefined) {
@@ -562,7 +568,7 @@ export async function runInstaller(options = {}) {
           mode: "review",
           dshMode: DEFAULT_DSH_MODE,
           templateDirectory,
-          preserveExact: true,
+          preserveGenerated: true,
         }),
     });
   }

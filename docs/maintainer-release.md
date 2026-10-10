@@ -513,10 +513,10 @@ template, packed template, and generated workflow has exactly one
 the current Action:
 
 The exact allowlisted archive contains `package.json`, `README.md`, `LICENSE`,
-seven runtime modules (`action-inputs.generated.mjs`, `cli.mjs`, `installer.mjs`,
-`guided.mjs`, `process.mjs`, `prompts.mjs`, `publication.mjs`) and six bound
+eight runtime modules (`action-inputs.generated.mjs`, `cli.mjs`, `installer.mjs`,
+`guided.mjs`, `process.mjs`, `prompts.mjs`, `publication.mjs`, `workflow-text.mjs`) and six bound
 templates under `dist/templates/`. Reject missing/extra files and symlinks.
-The four private guided modules are required runtime files, not optional source
+The private guided modules and shared workflow text policy are required runtime files, not optional source
 artifacts. Test `review`, `commands`, `both`, and `session` in both compositions;
 each Session workflow must keep `queue: max` and read-only permissions.
 

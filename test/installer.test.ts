@@ -267,6 +267,7 @@ describe("create-deepseek-harness-action release build", () => {
         "dist/process.mjs",
         "dist/prompts.mjs",
         "dist/publication.mjs",
+        "dist/workflow-text.mjs",
         "dist/templates/dsh-commands-native.yml",
         "dist/templates/dsh-commands.yml",
         "dist/templates/dsh-review-native.yml",

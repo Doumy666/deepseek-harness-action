@@ -292,7 +292,13 @@ assert.ok(
   installerRuntime.includes("--advanced") && installerRuntime.includes("runGuidedSetup"),
   "installer must retain both guided first-run and explicit advanced/manual entry points",
 );
-for (const runtime of ["guided.mjs", "process.mjs", "prompts.mjs", "publication.mjs"]) {
+for (const runtime of [
+  "guided.mjs",
+  "process.mjs",
+  "prompts.mjs",
+  "publication.mjs",
+  "workflow-text.mjs",
+]) {
   assert.ok(installerBuild.includes(`"${runtime}"`), `installer build must include ${runtime}`);
 }
 for (const expected of ["dsh-review-native.yml", "dsh-commands-native.yml"]) {

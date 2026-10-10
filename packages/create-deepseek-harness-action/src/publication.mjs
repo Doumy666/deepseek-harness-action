@@ -1,6 +1,7 @@
 import { lstat, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { canonicalWorkflowText } from "./workflow-text.mjs";
 
 const WORKFLOW_PATH = ".github/workflows/dsh-review.yml";
 const SHA = /^[0-9a-f]{40}$/u;
@@ -144,7 +145,7 @@ export async function publishReviewWorkflow({
           "Workflow destination became a symbolic link. No commit was created; inspect it before continuing.",
         );
     }
-    const contents = await readFile(join(root, WORKFLOW_PATH), "utf8");
+    const contents = canonicalWorkflowText(await readFile(join(root, WORKFLOW_PATH), "utf8"));
     if (contents !== expectedContents)
       throw new Error(
         "The workflow changed after its configuration check. No installer commit was created; preserve and review the edit manually.",
