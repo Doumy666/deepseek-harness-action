@@ -1,12 +1,13 @@
-import { access, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { access, lstat, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { join, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 
 import { INSTALLER_ACTION_INPUTS } from "./action-inputs.generated.mjs";
+import { runGuidedSetup } from "./guided.mjs";
 
 const DOCUMENTATION_URL =
-  "https://github.com/Lixiaoyiao/deepseek-harness-action/blob/create-deepseek-harness-action-v0.5.0/docs/setup.md";
+  "https://github.com/Lixiaoyiao/deepseek-harness-action/blob/create-deepseek-harness-action-v0.6.0/docs/setup.md";
 const ACTION_REFERENCE_PATTERN = /uses: Lixiaoyiao\/deepseek-harness-action@[0-9a-f]{40}(?:\s|$)/gu;
 const MODES = new Set(["review", "commands", "both", "session"]);
 const DSH_MODES = new Set(["controlled", "native"]);
@@ -52,8 +53,11 @@ const WORKFLOWS = Object.freeze({
 
 function usage() {
   return [
-    "Usage: create-deepseek-harness-action [--mode review|commands|both|session] [--dsh-mode controlled|native]",
+    "Usage: create-deepseek-harness-action [--advanced] [--mode review|commands|both|session] [--dsh-mode controlled|native]",
     "  [--test-commands '<JSON argv arrays>'] [--container-image '<name>@sha256:<digest>']",
+    "",
+    "Without flags, a terminal guides read-only PR Review setup, Secret setup and separately confirmed commit/push.",
+    "Use --advanced for interactive workflow/composition choices; explicit --mode generates files only.",
     "",
     "Workflow choices:",
     "  1) PR Review",
@@ -62,7 +66,7 @@ function usage() {
     "  4) Automatic Session",
     "",
     "DSH mode choices:",
-    "  1) Controlled (default for non-interactive use)",
+    "  1) Controlled (compatible default)",
     "  2) Native",
     "",
     "CI/non-interactive usage requires --mode; --dsh-mode defaults to controlled.",
@@ -123,9 +127,14 @@ export function parseArguments(argv) {
   let help = false;
   let testCommands;
   let containerImage;
+  let advanced = false;
 
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
+    if (argument === "--advanced") {
+      advanced = true;
+      continue;
+    }
     if (argument === "--help" || argument === "-h") {
       help = true;
       continue;
@@ -211,6 +220,7 @@ export function parseArguments(argv) {
     help,
     mode,
     dshMode,
+    ...(advanced ? { advanced } : {}),
     ...(testCommands === undefined ? {} : { testCommands }),
     ...(containerImage === undefined ? {} : { containerImage }),
   };
@@ -351,6 +361,7 @@ async function installWorkflows({
   templateDirectory,
   testCommands,
   containerImage,
+  preserveExact = false,
 }) {
   const definitions = workflowDefinitions(mode, dshMode).map((definition) => ({
     ...definition,
@@ -358,8 +369,33 @@ async function installWorkflows({
   }));
 
   const conflicts = [];
+  for (const path of [
+    join(cwd, ".github"),
+    join(cwd, ".github", "workflows"),
+    ...definitions.map(({ absoluteTarget }) => absoluteTarget),
+  ]) {
+    try {
+      if ((await lstat(path)).isSymbolicLink())
+        throw new Error(
+          "Refusing a symbolic-link workflow destination; use ordinary repository directories and rerun.",
+        );
+    } catch (error) {
+      if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
+    }
+  }
   for (const definition of definitions) {
-    if (await pathExists(definition.absoluteTarget)) conflicts.push(definition.target);
+    if (await pathExists(definition.absoluteTarget)) {
+      if (
+        preserveExact &&
+        definitions.length === 1 &&
+        definition.target.endsWith("dsh-review.yml")
+      ) {
+        const expected = await readFile(join(templateDirectory, definition.source), "utf8");
+        assertReleaseBuiltTemplate(expected, definition.source);
+        if ((await readFile(definition.absoluteTarget, "utf8")) === expected) return [];
+      }
+      conflicts.push(definition.target);
+    }
   }
   if (conflicts.length > 0) {
     throw new Error(
@@ -506,6 +542,30 @@ export async function runInstaller(options = {}) {
   let mode = parsed.mode;
   let dshMode = parsed.dshMode;
   const interactive = isTTY && !environment.CI;
+  if (
+    interactive &&
+    mode === undefined &&
+    dshMode === undefined &&
+    !parsed.advanced &&
+    parsed.testCommands === undefined &&
+    parsed.containerImage === undefined
+  ) {
+    return runGuidedSetup({
+      ...options,
+      cwd,
+      input,
+      output,
+      templateDirectory,
+      createWorkflow: (root) =>
+        installWorkflows({
+          cwd: root,
+          mode: "review",
+          dshMode: DEFAULT_DSH_MODE,
+          templateDirectory,
+          preserveExact: true,
+        }),
+    });
+  }
   if (mode === undefined) {
     if (!interactive) {
       throw new Error(
@@ -514,13 +574,13 @@ export async function runInstaller(options = {}) {
     }
   }
 
-  if (interactive && (mode === undefined || dshMode === undefined)) {
+  if (interactive && (mode === undefined || (parsed.advanced && dshMode === undefined))) {
     ({ mode, dshMode } = await promptForMissingSelections({ input, output, mode, dshMode }));
   }
   dshMode ??= DEFAULT_DSH_MODE;
 
   if (
-    mode === "review" &&
+    (mode === "review" || mode === "session") &&
     (parsed.testCommands !== undefined || parsed.containerImage !== undefined)
   ) {
     throw new Error("--test-commands/--container-image require commands or both");

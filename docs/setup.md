@@ -6,13 +6,52 @@ This guide takes you from installation to a safe first workflow. Start with read
 
 ## Quick Start: installer
 
-From the root of the repository you want to configure, run:
+From anywhere inside the existing GitHub repository you want to configure, run:
 
 ```bash
 npm create deepseek-harness-action@latest
 ```
 
-Choose what to install:
+With no flags in a terminal, the installer guides read-only PR Review. It finds
+the Git root and the `github.com` origin, checks `gh` availability/login and asks
+before creating `.github/workflows/dsh-review.yml`. It creates no remote
+repository or remote configuration. Guided setup requires an existing Git
+repository; use manual file generation below if you are still preparing one.
+
+When `gh` is logged in, the installer verifies repository access and lists only
+Secret names. If `DEEPSEEK_API_KEY` is absent, you may confirm setting it with
+hidden terminal input. Its value is sent only through `gh secret set` stdin;
+neither arguments nor logs contain the key. Missing login prints
+`gh auth login --hostname github.com`; finish the login manually and rerun, or
+add the Secret in **Settings → Secrets and variables → Actions**.
+
+Commit and push are separately confirmed and default to No. The installer
+commits only the generated workflow using an isolated index. Other edits and
+untracked files remain untouched; existing staged changes prevent its commit.
+It executes no repository hooks, filters, validation scripts or signing program.
+The commit is unsigned. Use a manual commit if your repository requires signing
+or hooks. Push requires a single verified destination and remote parent, then performs a normal
+non-force push of that exact commit; other unpublished or concurrent history
+requires manual reconciliation. Automatic tag following is disabled only for
+that push, preserving local settings. The workflow must reach the default branch.
+
+Rerun the same no-flag command to resume. An identical workflow is preserved;
+modified existing files require manual review. Login and Secret names are
+rechecked, a workflow-only commit is reused, and an already published commit is
+recognized. A failed or uncertain Secret request prints recovery guidance and
+does not expose transport output. Check Secret names/permissions before retrying.
+
+The built-in starter check validates the immutable Action reference, read-only
+worker and trusted base checkout. Credentials, Actions permissions/quota,
+Docker/image availability and the actual review still require a first Action run.
+
+Use `--advanced` to select workflow and controlled/native composition interactively:
+
+```bash
+npm create deepseek-harness-action@latest -- --advanced
+```
+
+The advanced/manual flow offers:
 
 | Choice                   | Files created                        |
 | ------------------------ | ------------------------------------ |
@@ -21,40 +60,45 @@ Choose what to install:
 | **Both**                 | Both workflow files above            |
 | **Automatic Session**    | `.github/workflows/dsh-session.yml`  |
 
-For CI or another non-interactive environment, pass the mode explicitly. The installer will not wait for stdin:
+Advanced setup and explicit flags only generate workflow files; they never set
+Secrets, commit, push or open PRs. In CI or another non-interactive environment,
+pass the mode explicitly; missing `--mode` fails without reading stdin:
 
 ```bash
 npm create deepseek-harness-action@latest -- --mode both
 ```
 
-For non-interactive use, omitting `--dsh-mode` keeps the compatible `controlled`
-default. The interactive flow asks explicitly; choose Controlled there unless
-native composition is intended:
+Explicit `--mode` also keeps manual file generation in a terminal. Omitting
+`--dsh-mode` defaults to `controlled` without a composition prompt; select
+native explicitly if intended:
 
 ```bash
 npm create deepseek-harness-action@latest -- --mode both --dsh-mode native
 ```
 
-Automatic Session creates a read-only starter. Commit it to the default branch and dispatch there with a lowercase key for the logical task. Reuse that key with a new prompt for follow-ups; no source run ID is needed. Failed, expired, corrupt or unknown history is rejected explicitly.
+Automatic Session creates a read-only starter with matching key/run-name/
+concurrency and `queue: max` to retain pending follow-ups. Commit it to the
+default branch and dispatch there with a lowercase key for the logical task.
+Reuse the key with a new prompt; no source run ID is needed. Failed, expired,
+corrupt or unknown history requires reconciliation before continuing.
 
 ```bash
 npm create deepseek-harness-action@latest -- --mode session
 ```
 
-The installer creates `.github/workflows/` when necessary and refuses to
-overwrite an existing target workflow. It does not add `DEEPSEEK_API_KEY`,
-commit or push changes, or open a pull request. Installer v0.5.0 targets the
-formal v0.10.0 Action commit `9c52f682bbeed1b7752a9e21273e6c13b01e79b1` and
-the exact DSH `0.2.0-rc.2` pin in both composition modes. Packing must follow
-successful Action tag, GitHub Release, and release-canary identity checks and
-receive that commit as `DSH_ACTION_RELEASE_SHA`. Both source templates and
-packed artifacts must retain the exact DSH pin. A candidate SHA, floating
-tag, or branch cannot substitute for the release binding.
+Installer `0.6.0` targets formal Action `v0.10.1` and exact DSH `0.2.0-rc.2`
+in both compositions. Source preparation is pending independent qualification
+and npm publication. Only after the Action tag, GitHub Release and canary agree
+does packing receive the verified full commit through `DSH_ACTION_RELEASE_SHA`.
+The separately reviewed installer source is tagged
+`create-deepseek-harness-action-v0.6.0`. Source templates retain the controlled
+build token; generated workflows contain neither that token nor a candidate SHA,
+floating tag or branch. A source commit cannot supply its own future identity.
 
 After the installer succeeds:
 
-1. Add `DEEPSEEK_API_KEY` under **Settings → Secrets and variables → Actions**.
-2. For Review, open or update a non-draft pull request.
+1. If guided setup did not configure it, add `DEEPSEEK_API_KEY` under **Settings → Secrets and variables → Actions**.
+2. Commit/push the workflow to the default branch; for Review, open or update a non-draft pull request.
 3. For Coding Commands, put an `@dsh` command on the first line of an Issue or pull request comment. Before requesting a write, replace the validation command placeholders with commands for your project.
 4. Continue with the security guidance in this document and read [Usage](usage.md) for every supported command.
 
@@ -90,7 +134,7 @@ tests and untouched placeholders before model startup. A bounded, credential-fre
 `docker info` probe reports an unavailable CLI/daemon before runtime installation.
 These checks never grant authority or replace executed Controller validation.
 
-Installer 0.5.0 accepts optional `--test-commands` JSON argv arrays and
+Installer 0.6.0 accepts optional `--test-commands` JSON argv arrays and
 `--container-image name@sha256:<64 lowercase hex>` for `commands` or `both`. Maintainers must explicitly choose reviewed,
 credential-free commands. The installer never discovers or executes scripts,
 and omitting the flags preserves the fail-closed placeholder.
@@ -129,12 +173,9 @@ uses: Lixiaoyiao/deepseek-harness-action@v0.10.1
 ```
 
 For production, replace the tag with the full immutable commit SHA resolved
-from the formal release. Installer v0.5.0 targets the v0.10.0 commit shown below;
-its separately reviewed installer source commit is a different identity:
-
-```yaml
-uses: Lixiaoyiao/deepseek-harness-action@9c52f682bbeed1b7752a9e21273e6c13b01e79b1 # v0.10.0
-```
+from formal `v0.10.1`. Installer `0.6.0` targets that Action identity, with a
+separately reviewed source commit. This source preparation does not yet record
+the formal Action SHA; do not substitute a candidate or historical release SHA.
 
 The installer source tag and `DSH_ACTION_RELEASE_SHA` packing input must each
 be verified for their own purpose. Source preparation does not establish a

@@ -16,47 +16,60 @@ Action 会启动与凭据隔离的 DSH worker，校验结构化结果，再由�
 
 ## 快速开始
 
-在需要接入的仓库根目录运行安装器：
+在需要接入的现有 GitHub 仓库内运行安装器：
 
 ```bash
 npm create deepseek-harness-action@latest
 ```
 
-选择一种模式：
+终端中的默认引导从**只读 PR Review** 开始。安装器查找 Git 根目录和
+`github.com` origin，检查 GitHub CLI 与登录状态，经你确认后创建固定完整 SHA
+的 workflow，不会创建远端仓库。已登录时，可确认通过隐藏输入设置
+`DEEPSEEK_API_KEY`；密钥仅通过 stdin 传给 `gh`，不会出现在参数或日志里。
+缺少登录或 Secret 权限时会给出恢复步骤；再次运行会保留内容完全相同的 workflow。
 
-- **PR Review** 创建 `.github/workflows/dsh-review.yml`。
-- **@dsh Coding Commands** 创建 `.github/workflows/dsh-commands.yml`。
-- **Both** 创建以上两个 workflow 文件。
-- **Automatic Session** 创建 `.github/workflows/dsh-session.yml`.
+Commit 和 push 分别确认，均默认否。安装器只提交它生成的 workflow，保留
+其它改动，有已暂存文件时拒绝提交，不执行仓库 hooks 或 filters。
+安装器创建未签名 commit，且只对兼容的现有分支执行经检查的非 force push；
+需签名或包含其它未发布历史时可手工完成。Workflow 到达默认分支后才能触发 PR Review。
 
-在 CI 或其它非交互环境中，必须显式传入 mode，安装器不会等待 stdin：
+通过 `--advanced` 显式进入 workflow 和 controlled/native 选择：
+
+```bash
+npm create deepseek-harness-action@latest -- --advanced
+```
+
+高级选项是 **PR Review**、**@dsh Coding Commands**、**Both** 和
+**Automatic Session**；该流程和显式 `--mode` 仅生成文件。
+在 CI 或其它非交互环境中必须显式传入 mode：
 
 ```bash
 npm create deepseek-harness-action@latest -- --mode both
 ```
 
-非交互使用时，省略 `--dsh-mode` 会保持兼容的 `controlled` 默认值。交互流程
-会明确询问；除非确实需要 native composition，否则请选择 Controlled：
+显式 `--mode` 在任何环境下都默认 `controlled`，需要 native 时明确指定：
 
 ```bash
 npm create deepseek-harness-action@latest -- --mode both --dsh-mode native
 ```
 
-Automatic Session 生成只读 starter。提交到默认分支后，从默认分支 dispatch；为逻辑任务选择一个小写 key，后续使用同 key 和新的 prompt 自动续接，无需 source run ID。失败、过期、损坏或状态不明的历史会明确拒绝。
+Automatic Session 生成只读 starter，使用 `queue: max` 保留排队的后续请求。
+提交到默认分支后，从默认分支 dispatch；选择小写 key，后续使用同 key 和新
+prompt 续接，无需 source run ID。失败、过期、损坏或状态不明的历史须先协调解决。
 
 ```bash
 npm create deepseek-harness-action@latest -- --mode session
 ```
 
-安装器会按需创建 `.github/workflows/`，如果目标 workflow 已存在则拒绝覆盖。
-它不会添加 Secret、commit 或 push 改动，也不会创建 PR。安装器 v0.5.0
-对应正式 v0.10.0 Action commit `9c52f682bbeed1b7752a9e21273e6c13b01e79b1`，
-controlled 与 native workflow 都保持 DSH `0.2.0-rc.2`。打包须在 Tag、GitHub
-Release 与 release canary 身份一致后，通过 `DSH_ACTION_RELEASE_SHA` 注入该
-核验过的完整、不可变 Action commit；源码模板与实际打包 workflow 都须保持精确 DSH pin。
-生成的 workflow 不会使用 candidate SHA、浮动 Tag 或分支。
+安装器 `0.6.0` 面向正式 Action `v0.10.1`，保持精确 DSH `0.2.0-rc.2`。
+当前源码准备仍待独立验证与 npm 发布；打包只在 Tag、Release 和 canary 身份
+一致后，通过 `DSH_ACTION_RELEASE_SHA` 注入核验过的完整 Action commit。
+安装器另有不可变源码 Tag `create-deepseek-harness-action-v0.6.0`，两个身份均不能猜填。
 
-安装完成后，在 **Settings → Secrets and variables → Actions** 中添加 `DEEPSEEK_API_KEY`。打开或更新一个非 draft PR 即可触发 Review；使用 Coding Commands 时，把 `@dsh` 命令写在 Issue 或 PR 评论的第一行。完整 onboarding 与安全说明见[安装指南](docs/setup.zh-CN.md)。
+引导未配置 Secret 时，在 **Settings → Secrets and variables → Actions** 中添加
+`DEEPSEEK_API_KEY`。Workflow 到达默认分支后，打开或更新非 draft PR。
+使用 Coding Commands 时，把 `@dsh` 写在 Issue 或 PR 评论的第一行，请求写入前
+配置可信 validation。恢复与手工接入步骤见[安装指南](docs/setup.zh-CN.md)。
 
 ### 手工安装
 

@@ -16,50 +16,69 @@ The Action starts a credential-isolated DSH worker, validates its structured res
 
 ## Quick Start
 
-Run the installer from the root of the repository you want to configure:
+Run the installer anywhere inside the existing GitHub repository you want to configure:
 
 ```bash
 npm create deepseek-harness-action@latest
 ```
 
-Choose one of these modes:
+In a terminal, the default guided flow starts with **read-only PR Review**.
+It finds the Git root and `github.com` origin, checks GitHub CLI availability
+and login, then creates an immutable-SHA workflow after your confirmation.
+It creates no remote repository. If logged in, you can set `DEEPSEEK_API_KEY`
+using hidden input; the key goes to `gh` through stdin and is never logged or
+placed in command arguments. Missing login or Secret access prints recovery
+steps, and rerunning preserves the identical generated workflow.
 
-- **PR Review** creates `.github/workflows/dsh-review.yml`.
-- **@dsh Coding Commands** creates `.github/workflows/dsh-commands.yml`.
-- **Both** creates both workflow files.
-- **Automatic Session** creates `.github/workflows/dsh-session.yml`.
+Commit and push each need a separate confirmation, defaulting to No. The
+installer commits only its generated workflow, preserves other changes,
+refuses an existing staged set, and runs no repository hooks or filters.
+Its unsigned commit and checked non-force push require a compatible existing
+branch; signed commits or other unpublished history can be completed manually.
+The workflow must reach the default branch before opening a non-draft PR.
 
-For CI or another non-interactive environment, pass the mode explicitly so the installer never waits for stdin:
+Use `--advanced` for interactive workflow and controlled/native choices:
+
+```bash
+npm create deepseek-harness-action@latest -- --advanced
+```
+
+Advanced choices are **PR Review**, **@dsh Coding Commands**, **Both**, and
+**Automatic Session**. This flow and explicit `--mode` flags generate files
+only. For CI or another non-interactive environment, pass the mode explicitly:
 
 ```bash
 npm create deepseek-harness-action@latest -- --mode both
 ```
 
-For non-interactive use, omitting `--dsh-mode` keeps the compatible `controlled`
-default. The interactive flow asks explicitly; choose Controlled there unless
-native composition is intended:
+With explicit `--mode`, omitting `--dsh-mode` keeps `controlled` in any
+environment. Select native composition explicitly when needed:
 
 ```bash
 npm create deepseek-harness-action@latest -- --mode both --dsh-mode native
 ```
 
-Automatic Session creates a read-only starter. Commit it to the default branch and dispatch there with a lowercase key for the logical task. Reuse that key with a new prompt for follow-ups; no source run ID is needed. Failed, expired, corrupt or unknown history is rejected explicitly.
+Automatic Session creates a read-only starter with `queue: max` to retain pending
+follow-ups. Commit it to the default branch and dispatch there with a lowercase
+key. Reuse the key with a new prompt; no source run ID is needed. Failed,
+expired, corrupt or unknown history requires reconciliation.
 
 ```bash
 npm create deepseek-harness-action@latest -- --mode session
 ```
 
-The installer creates `.github/workflows/` when needed and refuses to overwrite
-an existing target workflow. It does not add secrets, commit or push changes,
-or open a pull request. Installer v0.5.0 targets the formal v0.10.0 Action
-release at `9c52f682bbeed1b7752a9e21273e6c13b01e79b1`, with DSH `0.2.0-rc.2`
-in both controlled and native workflows. Packing receives this verified
-immutable Action commit through `DSH_ACTION_RELEASE_SHA` after the tag,
-GitHub Release, and release canary agree. Source templates and packed
-workflows must retain the exact DSH pin. Generated workflows never use a
-candidate SHA, floating tag, or branch.
+Installer `0.6.0` targets formal Action `v0.10.1`, retaining exact DSH
+`0.2.0-rc.2`. Source preparation is pending independent qualification and npm
+publication. Packing receives the verified full Action commit through
+`DSH_ACTION_RELEASE_SHA` only after tag, Release and canary identity checks.
+The separate immutable installer source tag is
+`create-deepseek-harness-action-v0.6.0`; neither identity is guessed.
 
-After installation, add `DEEPSEEK_API_KEY` under **Settings → Secrets and variables → Actions**. Open or update a non-draft pull request to trigger Review. For Coding Commands, put an `@dsh` command on the first line of an Issue or pull request comment. See [Setup](docs/setup.md) for the complete onboarding and security guide.
+If guided setup did not configure the Secret, add `DEEPSEEK_API_KEY` under
+**Settings → Secrets and variables → Actions**. Once the workflow reaches the
+default branch, open or update a non-draft PR. For Coding Commands, put `@dsh`
+on the first line of an Issue or PR comment and configure trusted validation
+before requesting a write. See [Setup](docs/setup.md) for resume and manual steps.
 
 ### Manual installation
 

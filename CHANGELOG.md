@@ -25,6 +25,23 @@ versioning for published action releases.
 - Retains the exact production DSH `0.2.0-rc.2` family. The guided installer is
   qualified and versioned independently after the formal Action canary.
 
+## Installer 0.6.0 - source preparation, pending independent qualification
+
+- Defaults terminal first runs to guided read-only PR Review; workflow and
+  controlled/native choices require `--advanced`, while explicit manual flags
+  and non-interactive safety remain compatible.
+- Discovers the existing GitHub repository, checks GitHub CLI login and Secret
+  names, and sends a confirmed hidden `DEEPSEEK_API_KEY` only through stdin.
+  Missing login/access and failed setup retain manual recovery and resume steps.
+- Separately confirms workflow-only unsigned commits and checked non-force
+  pushes, preserving user edits and existing staged changes without running
+  repository hooks, filters, validation scripts or signing programs.
+- Queues Session starter follow-ups with `queue: max`.
+- Targets formal Action `v0.10.1` and exact DSH `0.2.0-rc.2`; the real Action
+  SHA is injected through `DSH_ACTION_RELEASE_SHA` only after formal identity
+  and canary checks. The independent installer source tag, tarball, guided first
+  run, npm publication and fresh anonymous public consumers are separate gates.
+
 ## Installer 0.5.0 - 2026-10-08
 
 - Adds controlled/native automatic Session starter workflows with matching key identity and concurrency; existing review/commands/both modes remain.

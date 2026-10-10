@@ -22,7 +22,7 @@ import { sessionKeyHash } from "../src/session/contracts.js";
 import { assertSessionWorkflowPolicy } from "../src/session/workflow-policy.js";
 
 const execFileAsync = promisify(execFile);
-const INSTALLER_VERSION = "0.5.0";
+const INSTALLER_VERSION = "0.6.0";
 // Test-only binding. Production packing must resolve the qualified formal tag.
 const RELEASE_SHA = "0123456789abcdef0123456789abcdef01234567";
 const RELEASE_TOKEN = "__DSH_ACTION_RELEASE_SHA__";
@@ -118,7 +118,7 @@ afterAll(async () => {
 });
 
 describe("create-deepseek-harness-action release build", () => {
-  it("declares the independent 0.5.0 npm create package", async () => {
+  it("declares the independent 0.6.0 npm create package", async () => {
     const manifest: unknown = JSON.parse(
       await readFile(new URL("package.json", packageRoot), "utf8"),
     );
@@ -190,7 +190,7 @@ describe("create-deepseek-harness-action release build", () => {
       expect(runtime).not.toContain(DSH_MODE_TOKEN);
     }
     await expect(readFile(join(builtPackage, "installer.mjs"), "utf8")).resolves.toContain(
-      "/blob/create-deepseek-harness-action-v0.5.0/docs/setup.md",
+      "/blob/create-deepseek-harness-action-v0.6.0/docs/setup.md",
     );
 
     for (const [index, invalidReleaseSha] of [
@@ -238,10 +238,10 @@ describe("create-deepseek-harness-action release build", () => {
     const packResult = z
       .array(
         z.looseObject({
-          filename: z.string().optional(),
-          files: z.array(z.looseObject({ path: z.string().optional() })).optional(),
-          name: z.string().optional(),
-          version: z.string().optional(),
+          filename: z.string(),
+          files: z.array(z.looseObject({ path: z.string() })),
+          name: z.string(),
+          version: z.string(),
         }),
       )
       .parse(JSON.parse(stdout));
@@ -255,13 +255,25 @@ describe("create-deepseek-harness-action release build", () => {
     await expect(
       readFile(join(packDirectory, packResult[0]?.filename ?? "")),
     ).resolves.not.toHaveLength(0);
-    expect(packResult[0]?.files?.map(({ path }) => path).sort()).toEqual(
-      expect.arrayContaining([
+    expect(packResult[0]?.files.map(({ path }) => path).sort()).toEqual(
+      [
+        "LICENSE",
+        "README.md",
+        "package.json",
+        "dist/action-inputs.generated.mjs",
+        "dist/cli.mjs",
+        "dist/guided.mjs",
+        "dist/installer.mjs",
+        "dist/process.mjs",
+        "dist/prompts.mjs",
+        "dist/publication.mjs",
         "dist/templates/dsh-commands-native.yml",
         "dist/templates/dsh-commands.yml",
         "dist/templates/dsh-review-native.yml",
         "dist/templates/dsh-review.yml",
-      ]),
+        "dist/templates/dsh-session-native.yml",
+        "dist/templates/dsh-session.yml",
+      ].sort(),
     );
   });
 });
@@ -552,7 +564,7 @@ describe("installer modes", () => {
     const project = await createProject();
     const output = new OutputCapture();
     const result = await runInstaller({
-      argv: [],
+      argv: ["--advanced"],
       cwd: project,
       input: Readable.from([answer]),
       output,
@@ -573,7 +585,7 @@ describe("installer modes", () => {
     const project = await createProject();
     const output = new OutputCapture();
     const result = await runInstaller({
-      argv: ["--mode", "review"],
+      argv: ["--advanced", "--mode", "review"],
       cwd: project,
       input: Readable.from(["2\n"]),
       output,
@@ -629,7 +641,11 @@ describe("safe filesystem and non-interactive behavior", () => {
           on: z.looseObject({
             workflow_dispatch: z.looseObject({ inputs: z.record(z.string(), z.unknown()) }),
           }),
-          concurrency: z.looseObject({ group: z.string(), "cancel-in-progress": z.boolean() }),
+          concurrency: z.looseObject({
+            group: z.string(),
+            "cancel-in-progress": z.boolean(),
+            queue: z.literal("max"),
+          }),
           jobs: z.looseObject({
             session: z.looseObject({
               steps: z.array(
@@ -647,6 +663,7 @@ describe("safe filesystem and non-interactive behavior", () => {
       expect(document.concurrency).toEqual({
         group: document["run-name"],
         "cancel-in-progress": false,
+        queue: "max",
       });
       expect(document.on.workflow_dispatch.inputs.session_key).toMatchObject({
         type: "string",
