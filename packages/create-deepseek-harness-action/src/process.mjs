@@ -175,10 +175,8 @@ export async function runProcess(command, args, options = {}) {
   } catch {
     return { exitCode: 1, stdout: "", stderr: "", failure: "tool_unavailable" };
   }
-  const remainingMs = Math.max(
-    1,
-    timeoutMs - Number(process.hrtime.bigint() - started) / 1_000_000,
-  );
+  const remainingMs = timeoutMs - Number(process.hrtime.bigint() - started) / 1_000_000;
+  if (remainingMs <= 0) return { exitCode: 1, stdout: "", stderr: "", failure: "timeout" };
   return new Promise((resolve, reject) => {
     const child = spawn(executable, args, {
       cwd: options.cwd,
