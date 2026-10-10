@@ -73,6 +73,7 @@ function adapters(
   settings: {
     login?: boolean;
     secret?: string;
+    ghDefaultHost?: string;
     failSecret?: boolean;
     remoteAhead?: boolean;
     localRemote?: string;
@@ -85,6 +86,7 @@ function adapters(
 ) {
   const output = new Capture();
   const calls: Call[] = [];
+  const ghRepositoryRequests: { operation: string; host: string }[] = [];
   const questions: string[] = [];
   let indexRead = false;
   const processRunner = async (
@@ -114,6 +116,18 @@ function adapters(
           stderr: "",
           ...(settings.uncertainCleanup ? { termination: "unconfirmed" } : {}),
         };
+      const repositoryReference = args[0] === "repo" ? args[2] : args[args.indexOf("--repo") + 1];
+      const namespace = args[0];
+      const operation = args[1];
+      if (namespace === undefined || operation === undefined)
+        throw new Error("Unexpected empty gh operation");
+      ghRepositoryRequests.push({
+        operation: `${namespace}.${operation}`,
+        host:
+          repositoryReference === "github.com/example/sample"
+            ? "github.com"
+            : (settings.ghDefaultHost ?? "github.com"),
+      });
       if (args[0] === "repo")
         return {
           exitCode: 0,
@@ -213,7 +227,7 @@ function adapters(
       /* Input adapter has no terminal handles. */
     },
   };
-  return { output, calls, questions, processRunner, prompter };
+  return { output, calls, ghRepositoryRequests, questions, processRunner, prompter };
 }
 beforeAll(async () => {
   suite = await mkdtemp(join(tmpdir(), "dsh-guided-test-"));
@@ -229,6 +243,36 @@ afterAll(async () => {
   if (suite) await rm(suite, { recursive: true, force: true });
 });
 describe("installer guided first run", () => {
+  it("binds repository access and Secret setup to github.com despite a different CLI default host", async () => {
+    const root = await project();
+    // Both hosts expose the same owner/name; nameWithOwner alone cannot bind the host.
+    const key = "host-binding-fixture-key";
+    const io = adapters(["y", "y", "n"], {
+      secret: key,
+      ghDefaultHost: "enterprise.example.invalid",
+    });
+    const result = await runInstaller({
+      argv: [],
+      cwd: root,
+      input: Readable.from([]),
+      isTTY: true,
+      env: {},
+      templateDirectory: templates,
+      ...io,
+    });
+    expect(result.onboarding).toMatchObject({
+      repository: "example/sample",
+      secret: "configured",
+      committed: false,
+      pushed: false,
+    });
+    expect(io.ghRepositoryRequests).toEqual([
+      { operation: "repo.view", host: "github.com" },
+      { operation: "secret.list", host: "github.com" },
+      { operation: "secret.set", host: "github.com" },
+    ]);
+    expect(io.output.text).not.toContain(key);
+  });
   it("makes actual transport cleanup uncertainty recoverable without printing process output", async () => {
     const root = await project();
     const io = adapters(["y", "n"], { login: false, uncertainCleanup: true });
@@ -895,7 +939,13 @@ describe("installer guided first run", () => {
     const set = io.calls.find(
       (call) => call.command === "gh" && call.args[0] === "secret" && call.args[1] === "set",
     );
-    expect(set?.args).toEqual(["secret", "set", "DEEPSEEK_API_KEY", "--repo", "example/sample"]);
+    expect(set?.args).toEqual([
+      "secret",
+      "set",
+      "DEEPSEEK_API_KEY",
+      "--repo",
+      "github.com/example/sample",
+    ]);
     expect(set?.input).toBe(`${key}\n`);
     expect(io.calls.every((call) => !call.args.join(" ").includes(key))).toBe(true);
     expect(io.output.text).not.toContain(key);

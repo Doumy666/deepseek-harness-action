@@ -14,7 +14,9 @@ and checks GitHub CLI availability/login before creating the pinned workflow.
 It never creates a remote repository or changes your remotes.
 
 If `gh` is available and logged in, it verifies access to that repository and
-checks Secret names. You can confirm setting `DEEPSEEK_API_KEY` through hidden
+checks Secret names. Repository reads and Secret operations explicitly target
+`github.com`, even when `GH_HOST` selects an Enterprise host. Existing CLI login
+configuration is preserved. You can confirm setting `DEEPSEEK_API_KEY` through hidden
 terminal input; the key goes only to `gh secret set` through stdin. It is never
 written to a workflow, command argument, shell history, or installer log.
 Missing login or failed setup prints the exact next step. Add the Secret through

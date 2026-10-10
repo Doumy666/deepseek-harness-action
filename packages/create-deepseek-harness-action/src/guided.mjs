@@ -37,9 +37,10 @@ function verifyReviewConfiguration(contents) {
 }
 
 async function configureSecret({ repository, root, prompt, output, invoke }) {
+  const repositoryReference = `github.com/${repository}`;
   const details = await invoke(
     "gh",
-    ["repo", "view", repository, "--json", "nameWithOwner,defaultBranchRef"],
+    ["repo", "view", repositoryReference, "--json", "nameWithOwner,defaultBranchRef"],
     root,
   );
   let resolved;
@@ -59,7 +60,7 @@ async function configureSecret({ repository, root, prompt, output, invoke }) {
   }
   const listed = await invoke(
     "gh",
-    ["secret", "list", "--repo", repository, "--json", "name"],
+    ["secret", "list", "--repo", repositoryReference, "--json", "name"],
     root,
   );
   let secrets;
@@ -109,7 +110,7 @@ async function configureSecret({ repository, root, prompt, output, invoke }) {
   }
   const result = await invoke(
     "gh",
-    ["secret", "set", "DEEPSEEK_API_KEY", "--repo", repository],
+    ["secret", "set", "DEEPSEEK_API_KEY", "--repo", repositoryReference],
     root,
     `${key}\n`,
   );
