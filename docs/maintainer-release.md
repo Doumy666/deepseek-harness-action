@@ -340,6 +340,21 @@ Actions token context, so its success cannot prove the reader or writer tokens
 from a failed E2E run have recovered. It does not qualify any candidate or
 release or replace any Core E2E evidence.
 
+The Integration job also performs one pinned-blob GET with its own declared
+writer-profile token before creating fixtures or starting tasks. Its scalar
+report records the actual status, `core` quota and reset time; missing or
+malformed headers, exhausted quota and request failures stop before effects.
+This establishes that job's current content-read admission, not recovery of an
+old token or a complete-run quota guarantee. Successful writes, final cleanup
+and candidate revalidation remain separate required evidence.
+
+The Issue GitHub-tool scenario materializes the identity-verified two-file
+fixture base through the real Controller, rather than downloading all of
+`main` again. It retains validation and fresh authority checks. The native
+write scenario still materializes the complete trusted repository and retains
+its original npm install, typecheck and test commands; review, fix and
+implementation assertions and cleanup are unchanged.
+
 ## Merge and qualify `main`
 
 After candidate CI and pre-merge Core E2E pass:

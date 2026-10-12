@@ -1389,6 +1389,9 @@ jobs:
           node --check .github/e2e/read-action-output.mjs
           bash -n .github/e2e/assert-candidate-binding.sh
 
+          # Observe this writer-profile job's own read budget before any fixture or task.
+          node .github/e2e/integration-quota.mjs "$(git hash-object action.yml)"
+
           gh api "repos/$REPOSITORY" > "$RUNNER_TEMP/dsh-e2e-integration-repository.json"
           bash .github/e2e/assert-candidate-binding.sh
 
@@ -1657,8 +1660,11 @@ jobs:
           jq -e '.conclusion == "neutral" and .status == "neutral" and .operation == "none"' <<<"$denied_result" >/dev/null
           jq -s -e '[.[] | select(.route == "label")] | length == 1' "$audit" >/dev/null
 
+          # Issue tools need a real repository snapshot, not repeated full-main downloads.
+          [[ "$(gh api "repos/$REPOSITORY/git/ref/heads/$CHECKS_BASE_BRANCH" --jq .object.sha)" == "$CHECKS_BASE_SHA" ]]
           run_candidate github issue_comment "$RUNNER_TEMP/dsh-e2e-github-event.json" github \
             'INPUT_COMMAND=auto' 'INPUT_TRIGGER-PHRASE=/deepseek' \
+            "INPUT_DEFAULT-BRANCH=$CHECKS_BASE_BRANCH" \
             "INPUT_ALLOWED-ACTORS=$actor" 'INPUT_INCLUDE-COMMENTS-BY-ACTOR=*' \
             "INPUT_EXCLUDE-COMMENTS-BY-ACTOR=$actor,github-actions[bot]" \
             'INPUT_PERMISSION-PROFILE=custom' \
