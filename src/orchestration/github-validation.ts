@@ -6,6 +6,7 @@ import type { GitHubMutationValidationGate } from "../tools/github-authority-gat
 import {
   enforceValidationIntegrity,
   inspectValidationIntegrity,
+  type ValidationIntegritySummary,
 } from "../write/validation-integrity.js";
 import {
   remainingValidationMs,
@@ -16,6 +17,7 @@ import {
   assertValidationSucceeded,
   assertWriteValidationConfigured,
   runValidationCommandsInDocker,
+  type CurrentWorkspaceValidation,
 } from "../write/validate.js";
 import {
   fingerprintWorkspace,
@@ -26,7 +28,13 @@ import type { RunState } from "./lifecycle.js";
 
 /** Controller validation for the exact workspace revision behind deferred GitHub mutations. */
 export class ControllerGitHubMutationValidation {
-  private fingerprint: string | undefined;
+  private validatedRevision:
+    | {
+        readonly fingerprint: string;
+        readonly commandCount: number;
+        readonly integrity: ValidationIntegritySummary | undefined;
+      }
+    | undefined;
   private budget: ValidationDeadline | undefined;
 
   public constructor(
@@ -48,9 +56,17 @@ export class ControllerGitHubMutationValidation {
     const { state, workspace, inputs, deadlineMs, signal } = this.options;
     assertWriteValidationConfigured(inputs.runTests, inputs.testCommands);
     const before = await fingerprintWorkspace(workspace.workerRoot);
-    if (before === this.fingerprint) return;
+    const validated = this.validatedRevision;
+    if (before === validated?.fingerprint) {
+      state.validationPassed = true;
+      state.validationCommandCount = validated.commandCount;
+      if (validated.integrity === undefined) delete state.validationIntegrity;
+      else state.validationIntegrity = validated.integrity;
+      return;
+    }
     state.phase = "validation";
     state.validationPassed = false;
+    state.validationCommandCount = 0;
     if (this.budget === undefined) {
       const phaseMs = phaseTimeoutMs(deadlineMs, PHASE_TIMEOUTS.validationMs, Date.now);
       if (phaseMs <= 0) throw new AgentDeadlineError();
@@ -95,6 +111,9 @@ export class ControllerGitHubMutationValidation {
           remainingValidationMs(budget),
           undefined,
           signal,
+          (commandCount) => {
+            state.validationCommandCount = commandCount;
+          },
         ),
       budget,
     );
@@ -106,11 +125,30 @@ export class ControllerGitHubMutationValidation {
       );
     }
     state.validationPassed = true;
-    this.fingerprint = after;
+    this.rememberValidatedRevision(after);
+  }
+
+  /** Keep the accepted revision and its execution facts in the same private cache. */
+  private rememberValidatedRevision(fingerprint: string): void {
+    const { state } = this.options;
+    this.validatedRevision = {
+      fingerprint,
+      commandCount: state.validationCommandCount ?? 0,
+      integrity: state.validationIntegrity,
+    };
   }
 
   /** Existing Controller write validation authorizes this exact new revision. */
-  public async acceptValidatedWorkspaceRevision(): Promise<void> {
-    this.fingerprint = await fingerprintWorkspace(this.options.workspace.workerRoot);
+  public async acceptValidatedWorkspaceRevision(
+    validation: CurrentWorkspaceValidation,
+  ): Promise<void> {
+    const current = await fingerprintWorkspace(this.options.workspace.workerRoot);
+    if (current !== validation.fingerprint) {
+      throw new PolicyDeniedError(
+        "Current workspace does not match Controller write validation; refusing mutation",
+      );
+    }
+    this.options.state.validationCommandCount = validation.commandCount;
+    this.rememberValidatedRevision(current);
   }
 }

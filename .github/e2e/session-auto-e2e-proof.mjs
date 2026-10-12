@@ -3,10 +3,15 @@ import { createHash, randomBytes } from "node:crypto";
 import { appendFile, lstat, mkdir, readFile, writeFile } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { TextDecoder } from "node:util";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, URL } from "node:url";
 
 import { sessionFormatCatalog } from "@deepseek-ai/dsh-session-format-catalog";
 import { unzipSync } from "fflate";
+import {
+  assertExpiredFixtureProvenance,
+  assertOrphanFixtureProvenance,
+  historicalHarnessPaths,
+} from "./session-history-fixture-proof.mjs";
 
 const MAX_ARCHIVE = 4 * 1024 * 1024 + 64 * 1024;
 const MAX_PAYLOAD = 4 * 1024 * 1024;
@@ -165,6 +170,7 @@ export function inspectCheckpointArchive(input, expected) {
     payload,
     payloadSha256: digest(payload),
     archiveSha256: digest(input),
+    manifestSha256: digest(JSON.stringify(manifest)),
     eventCount: events.length,
     generation: manifest.session.generation,
   };
@@ -240,8 +246,14 @@ export function failureChecks(result, expected, actionOutcome) {
   const diagnostic = result?.error?.message ?? "";
   const patterns = {
     failed: /Automatic Session history.*failed/iu,
-    unknown: /Automatic Session history.*unknown/iu,
-    expired: /Automatic Session history.*expired/iu,
+    unknown:
+      expected.orphanProvenanceVerified === true
+        ? /^Automatic Session run-name does not match its verified logical key$/u
+        : /Automatic Session history.*unknown/iu,
+    expired:
+      expected.manifestExpiryVerified === true
+        ? /^Session checkpoint is expired or has an invalid retention window$/u
+        : /Automatic Session history.*expired/iu,
     missing: /Automatic Session history.*missing/iu,
     incompatible: /Automatic Session history.*incompatible/iu,
     corrupt: /Session (?:artifact|ZIP|manifest|payload)|checkpoint.*(?:invalid|corrupt)/iu,
@@ -288,6 +300,8 @@ function identity(env) {
     dshMode: env.DSH_MODE,
     keyHash: digest((env.SESSION_KEY ?? "").toLowerCase()),
     runTitle: `dsh-session-${env.SESSION_KEY ?? ""}`,
+    fixtureKind: env.FIXTURE_KIND ?? "none",
+    fixtureSourceRunId: Number(env.FIXTURE_SOURCE_RUN_ID || 0),
   };
   requireCheck(
     ["auto", "save", "resume"].includes(value.requestedPhase) &&
@@ -303,17 +317,36 @@ function identity(env) {
       /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/u.test(env.SESSION_KEY ?? ""),
     "IDENTITY",
   );
+  requireCheck(
+    ["none", "corrupt", "orphan", "expired"].includes(value.fixtureKind) &&
+      (value.fixtureSourceRunId === 0 ||
+        (positive(value.fixtureSourceRunId) &&
+          value.fixtureSourceRunId < value.runId &&
+          ["unknown", "expired"].includes(value.expectedFailure) &&
+          value.fixtureKind === "none")) &&
+      (value.fixtureKind === "none" ||
+        (value.expectedFailure === "none" &&
+          env.FORCE_FAILURE !== "true" &&
+          ["auto", "save"].includes(value.requestedPhase))) &&
+      (value.fixtureKind === "orphan"
+        ? /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/u.test(env.FIXTURE_TARGET_KEY ?? "") &&
+          (env.FIXTURE_TARGET_KEY ?? "").toLowerCase() !== (env.SESSION_KEY ?? "").toLowerCase()
+        : (env.FIXTURE_TARGET_KEY ?? "") === ""),
+    "FIXTURE_SELECTION",
+  );
   return value;
 }
 
 // Fixture/qualification reads use this job's GITHUB_TOKEN. Model credentials stay in the Action.
 function githubReader(env) {
   const audit = { credentialScope: "session-e2e-fixture-job-token", apiCommands: 0, retries: 0 };
-  const read = (path, maximum = 1024 * 1024) => {
+  const read = (path, maximum = 1024 * 1024, projection) => {
     requireCheck(audit.apiCommands < 18, "REQUEST_BUDGET");
     audit.apiCommands += 1;
     try {
-      return execFileSync("gh", ["api", "--method", "GET", path], {
+      const args = ["api", "--method", "GET", path];
+      if (projection !== undefined) args.push("--jq", projection);
+      return execFileSync("gh", args, {
         env,
         timeout: 30_000,
         maxBuffer: maximum,
@@ -325,7 +358,7 @@ function githubReader(env) {
   };
   return {
     audit,
-    json: (path) => JSON.parse(read(path).toString("utf8")),
+    json: (path, projection) => JSON.parse(read(path, 1024 * 1024, projection).toString("utf8")),
     archive: (path) => read(path, MAX_ARCHIVE),
   };
 }
@@ -337,6 +370,8 @@ async function prepare(env, directory) {
   for (let page = 1; page <= 10; page++) {
     const listed = reader.json(
       `repos/${current.repository}/actions/workflows/session-auto-e2e.yml/runs?event=workflow_dispatch&per_page=100&page=${page}`,
+      // Selection needs only these headers; source provenance is re-read below in full.
+      '{workflow_runs: (.workflow_runs | if type == "array" then map(if type == "object" then {id, path, event, display_title, status, conclusion} else . end) else . end)} + (if has("total_count") then {total_count} else {} end)',
     );
     requireCheck(
       listed.total_count <= 1000 && Array.isArray(listed.workflow_runs),
@@ -349,9 +384,121 @@ async function prepare(env, directory) {
   const history = selectSessionHistory(runs, current);
   const phase = history.status === "first" ? "save" : "resume";
   requireCheck(current.requestedPhase === "auto" || current.requestedPhase === phase, "PHASE");
+  requireCheck(
+    current.fixtureKind === "none" || history.status === "first",
+    "FRESH_FIXTURE_PRODUCER",
+  );
+  let orphanProof;
+  let expiryProof;
+  if (current.fixtureSourceRunId > 0) {
+    const source = reader.json(
+      `repos/${current.repository}/actions/runs/${current.fixtureSourceRunId}`,
+    );
+    const listed = reader.json(
+      `repos/${current.repository}/actions/runs/${current.fixtureSourceRunId}/artifacts?per_page=100`,
+    );
+    requireCheck(
+      listed.total_count <= 100 && Array.isArray(listed.artifacts),
+      "FIXTURE_ARTIFACT_BOUND",
+    );
+    const readProof = (name, file) => {
+      const candidates = listed.artifacts.filter(
+        (artifact) => artifact.name === name && !artifact.expired,
+      );
+      requireCheck(
+        candidates.length === 1 &&
+          candidates[0].size_in_bytes <= 16 * 1024 &&
+          candidates[0].workflow_run?.id === current.fixtureSourceRunId &&
+          candidates[0].workflow_run?.head_sha ===
+            (current.expectedFailure === "expired" ? source.head_sha : current.harnessSha),
+        "FIXTURE_PROOF_ARTIFACT",
+      );
+      const zip = reader.archive(
+        `repos/${current.repository}/actions/artifacts/${candidates[0].id}/zip`,
+      );
+      requireCheck(candidates[0].digest === `sha256:${digest(zip)}`, "FIXTURE_PROOF_DIGEST");
+      const names = [];
+      const entries = unzipSync(zip, {
+        filter: (entry) => {
+          names.push(entry.name);
+          return entry.name === file && entry.originalSize <= 8 * 1024;
+        },
+      });
+      requireCheck(
+        names.length === 1 && names[0] === file && entries[file]?.length > 0,
+        "FIXTURE_PROOF_FILE",
+      );
+      return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(entries[file]));
+    };
+    const receipt = readProof(
+      `session-e2e-fixture-${source.id}-${source.run_attempt}`,
+      "receipt.json",
+    );
+    const sourceProof = assertSourceProof(
+      readProof(`session-e2e-proof-${source.id}-${source.run_attempt}`, "proof.json"),
+      {
+        ...current,
+        runId: source.id,
+        runAttempt: source.run_attempt,
+        keyHash: receipt.sourceKeyHash,
+        ...(current.expectedFailure === "expired"
+          ? {
+              candidateSha: receipt.candidateSha,
+              harnessSha: source.head_sha,
+            }
+          : {}),
+      },
+    );
+    const artifacts = listed.artifacts.filter(
+      (artifact) => artifact.id === receipt.artifactId && artifact.name === receipt.artifactName,
+    );
+    requireCheck(artifacts.length === 1, "FIXTURE_CHECKPOINT_ARTIFACT");
+    const provenance = {
+      receipt,
+      sourceProof,
+      sourceRun: source,
+      artifact: artifacts[0],
+      history,
+      current: {
+        ...current,
+        runId: source.id,
+        runAttempt: source.run_attempt,
+        targetKey: env.SESSION_KEY,
+        targetKeyHash: current.keyHash,
+        currentRunId: current.runId,
+        defaultBranch: env.DEFAULT_BRANCH,
+      },
+    };
+    if (current.expectedFailure === "expired") {
+      let sourceHarness;
+      if (source.head_sha !== current.harnessSha) {
+        requireCheck(HEX40.test(source.head_sha), "FIXTURE_SOURCE_SHA");
+        const commit = reader.json(`repos/${current.repository}/git/commits/${source.head_sha}`);
+        requireCheck(
+          commit.sha === source.head_sha && HEX40.test(commit.tree?.sha ?? ""),
+          "FIXTURE_SOURCE_TREE",
+        );
+        const tree = reader.json(
+          `repos/${current.repository}/git/trees/${commit.tree.sha}?recursive=1`,
+        );
+        const files = {};
+        const root = resolve(fileURLToPath(new URL("../..", import.meta.url)));
+        for (const path of historicalHarnessPaths)
+          files[path] = await boundedFile(join(root, path), 128 * 1024);
+        sourceHarness = { commit, tree, files };
+      }
+      const archive = reader.archive(
+        `repos/${current.repository}/actions/artifacts/${receipt.artifactId}/zip`,
+      );
+      expiryProof = assertExpiredFixtureProvenance({ ...provenance, archive, sourceHarness });
+    } else orphanProof = assertOrphanFixtureProvenance(provenance);
+  }
   if (current.expectedFailure !== "none") {
-    requireCheck(history.source !== undefined, "FAILURE_REQUIRES_HISTORY");
-    if (["failed", "unknown"].includes(current.expectedFailure))
+    requireCheck(
+      history.source !== undefined || orphanProof !== undefined,
+      "FAILURE_REQUIRES_HISTORY",
+    );
+    if (["failed", "unknown"].includes(current.expectedFailure) && orphanProof === undefined)
       requireCheck(history.status === current.expectedFailure, "FAILURE_HISTORY");
   } else requireCheck(["first", "success"].includes(history.status), "HISTORY_NOT_SUCCESSFUL");
   let parent;
@@ -407,10 +554,29 @@ async function prepare(env, directory) {
   }
   const memory = parent?.memory ?? randomBytes(24).toString("hex");
   const challenge = randomBytes(12).toString("hex");
+  // These validated hex oracle values stay intact in same-job outputs, but are masked in logs.
+  process.stdout.write(`::add-mask::${memory}\n::add-mask::${challenge}\n`);
   const expected = {
     ...current,
     phase,
     ...(history.source === undefined ? {} : { sourceRunId: history.source.id }),
+    ...(orphanProof === undefined
+      ? {}
+      : {
+          orphanProvenanceVerified: true,
+          orphanArtifactId: orphanProof.artifactId,
+          orphanSourceRunId: orphanProof.runId,
+        }),
+    ...(expiryProof === undefined
+      ? {}
+      : {
+          manifestExpiryVerified: true,
+          expiryArtifactId: expiryProof.artifactId,
+          expirySourceRunId: expiryProof.runId,
+          manifestExpiresAt: expiryProof.expiry.expiresAt,
+          expirySourceCandidateSha: expiryProof.candidateSha,
+          expirySourceHarnessSha: expiryProof.harnessSha,
+        }),
     generation: (parent?.generation ?? 0) + 1,
     memory,
     challenge,
@@ -436,6 +602,23 @@ async function prepare(env, directory) {
       historyStatus: history.status,
       expectedFailure: current.expectedFailure,
       fixtureRequests: reader.audit,
+      ...(orphanProof === undefined
+        ? {}
+        : {
+            fixtureBoundary: "orphan-provenance-denial",
+            orphanArtifactId: orphanProof.artifactId,
+            orphanSourceRunId: orphanProof.runId,
+          }),
+      ...(expiryProof === undefined
+        ? {}
+        : {
+            fixtureBoundary: "manifest-expiry-denial",
+            expiryArtifactId: expiryProof.artifactId,
+            expirySourceRunId: expiryProof.runId,
+            manifestExpiresAt: expiryProof.expiry.expiresAt,
+            expirySourceCandidateSha: expiryProof.candidateSha,
+            expirySourceHarnessSha: expiryProof.harnessSha,
+          }),
     }) + "\n",
   );
 }
@@ -455,6 +638,8 @@ async function verify(env, directory) {
     "dshMode",
     "keyHash",
     "runTitle",
+    "fixtureKind",
+    "fixtureSourceRunId",
   ])
     requireCheck(expected[key] === current[key], "CURRENT_BINDING");
   let result;
@@ -505,6 +690,7 @@ async function verify(env, directory) {
         );
       }
       checks.rawCheckpoint = true;
+      await writeFile(join(directory, "current-checkpoint.zip"), archive, { mode: 0o600 });
     } catch (error) {
       checks.rawCheckpoint = false;
       archiveError =
@@ -525,14 +711,26 @@ async function verify(env, directory) {
     errorCode: /^[A-Z][A-Z0-9_]{0,79}$/u.test(result?.error?.code ?? "") ? result.error.code : null,
     checks,
     fixtureRequests: reader.audit,
+    ...(expected.manifestExpiryVerified === true
+      ? {
+          fixtureBoundary: "manifest-expiry-denial",
+          expiryArtifactId: expected.expiryArtifactId,
+          expirySourceRunId: expected.expirySourceRunId,
+          manifestExpiresAt: expected.manifestExpiresAt,
+          expirySourceCandidateSha: expected.expirySourceCandidateSha,
+          expirySourceHarnessSha: expected.expirySourceHarnessSha,
+        }
+      : {}),
     ...(archiveError === undefined ? {} : { archiveError }),
     ...(checkpoint === undefined
       ? {}
       : {
           sessionId: result.session.sessionId,
           artifactId: result.session.artifactId,
+          artifactName: result.session.artifactName,
           payloadSha256: checkpoint.payloadSha256,
           archiveSha256: checkpoint.archiveSha256,
+          manifestSha256: checkpoint.manifestSha256,
           eventCount: checkpoint.eventCount,
           generation: checkpoint.generation,
         }),

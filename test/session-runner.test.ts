@@ -153,9 +153,10 @@ async function fixture(rejection: "secret" | "extra-session", enabled = true) {
         environment: {},
         startProxy: () =>
           Promise.resolve({
+            controllerBaseUrl: "http://172.30.0.1:3456",
             workerBaseUrl: "http://host.docker.internal:3456",
             workerToken: "ephemeral-worker-token",
-            boundHost: "0.0.0.0",
+            boundHost: "172.30.0.1",
             port: 3456,
             close,
           }),

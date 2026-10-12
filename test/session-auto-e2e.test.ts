@@ -8,6 +8,7 @@ import { parse } from "yaml";
 
 import { parseTaskOutputSchema, validateTaskOutput } from "../src/dsh/task-output.js";
 import { loadInputs } from "../src/inputs.js";
+import { assertSessionWorkflowPolicy } from "../src/session/workflow-policy.js";
 
 import * as fixture from "../.github/e2e/session-auto-e2e-proof.mjs";
 import { fixtureObject as object } from "./helpers/json-fixture.js";
@@ -100,6 +101,7 @@ function checkpoint(
   });
   return {
     archive,
+    manifest,
     payload,
     expected: identity({
       generation,
@@ -255,6 +257,7 @@ describe("independent Actions Session qualification fixture", () => {
         payload: value.payload,
         payloadSha256: hash(value.payload),
         archiveSha256: hash(value.archive),
+        manifestSha256: hash(Buffer.from(JSON.stringify(value.manifest))),
         generation: 1,
         eventCount: 6,
       });
@@ -391,6 +394,23 @@ describe("independent Actions Session qualification fixture", () => {
     expect(workflow).toContain("bash .github/e2e/assert-candidate-binding.sh");
     expect(JSON.stringify(jobs.gate)).not.toContain("secrets.");
     expect(workflow).not.toContain("continue-on-error: ${{");
+    expect(
+      assertSessionWorkflowPolicy(workflow, "session", hash(Buffer.from("fixture-logical-task")))
+        .jobId,
+    ).toBe("session");
+    const steps = object(jobs.session).steps;
+    if (!Array.isArray(steps)) throw new Error("Missing Session workflow steps");
+    const fixtureStep = steps.map(object).find((step) => step.id === "fixture");
+    expect(fixtureStep?.if).toBe(
+      "steps.verify.outcome == 'success' && inputs.expected_failure == 'none' && inputs.fixture_kind != 'none'",
+    );
+    expect(
+      steps.findIndex(
+        (step) => object(step).name === "Save successful pair proof outside the worker",
+      ),
+    ).toBeLessThan(steps.findIndex((step) => object(step).id === "fixture"));
+    expect(inputs["fixture-source-run-id"]).toBeUndefined();
+    expect(inputs["fixture-kind"]).toBeUndefined();
   });
 
   it("independently distinguishes first use, successful history, failed history and unknown history", () => {
@@ -498,4 +518,83 @@ describe("independent Actions Session qualification fixture", () => {
       ).toBe(false);
     },
   );
+  it("accepts only the exact orphan provenance denial after an independently verified fixture", () => {
+    const result = {
+      conclusion: "failure",
+      error: {
+        code: "SESSION_CHECKPOINT",
+        message: "Automatic Session run-name does not match its verified logical key",
+      },
+      session: { mode: "auto", status: "failed" },
+      loop: { turns: 0, toolCalls: 0 },
+    };
+    expect(
+      fixture.failureChecks(result, { expectedFailure: "unknown" }, "failure").exactBoundary,
+    ).toBe(false);
+    const expected = { expectedFailure: "unknown", orphanProvenanceVerified: true };
+    expect(Object.values(fixture.failureChecks(result, expected, "failure")).every(Boolean)).toBe(
+      true,
+    );
+    expect(
+      fixture.failureChecks({ ...result, loop: { turns: 1 } }, expected, "failure").noTaskExecution,
+    ).toBe(false);
+    expect(
+      fixture.failureChecks(
+        { ...result, error: { ...result.error, message: "Automatic Session history is unknown" } },
+        expected,
+        "failure",
+      ).exactBoundary,
+    ).toBe(false);
+    expect(fixture.failureChecks(result, expected, "success").actionDenied).toBe(false);
+  });
+  it("accepts the exact manifest-expiry denial only with independent evidence and keeps every no-effect check", () => {
+    const result = {
+      conclusion: "failure",
+      error: {
+        code: "SESSION_CHECKPOINT",
+        message: "Session checkpoint is expired or has an invalid retention window",
+      },
+      session: { mode: "auto", status: "failed" },
+      loop: { turns: 0, toolCalls: 0 },
+    };
+    expect(
+      fixture.failureChecks(result, { expectedFailure: "expired" }, "failure").exactBoundary,
+    ).toBe(false);
+    const expected = { expectedFailure: "expired", manifestExpiryVerified: true };
+    expect(Object.values(fixture.failureChecks(result, expected, "failure")).every(Boolean)).toBe(
+      true,
+    );
+    expect(fixture.failureChecks(result, expected, "success").actionDenied).toBe(false);
+    expect(
+      fixture.failureChecks({ ...result, isolation: {} }, expected, "failure").noWorkerStart,
+    ).toBe(false);
+    expect(
+      fixture.failureChecks({ ...result, loop: { turns: 1 } }, expected, "failure").noTaskExecution,
+    ).toBe(false);
+    expect(
+      fixture.failureChecks({ ...result, loop: { toolCalls: 1 } }, expected, "failure")
+        .noToolExecution,
+    ).toBe(false);
+    expect(
+      fixture.failureChecks(
+        { ...result, session: { status: "failed", artifactId: 33 } },
+        expected,
+        "failure",
+      ).noCheckpoint,
+    ).toBe(false);
+    expect(
+      fixture.failureChecks(
+        { ...result, write: { commitSha: "c".repeat(40) } },
+        expected,
+        "failure",
+      ).noWrites,
+    ).toBe(false);
+    expect(
+      fixture.failureChecks(
+        { ...result, error: { ...result.error, message: "Automatic Session history is expired" } },
+        expected,
+        "failure",
+      ).exactBoundary,
+    ).toBe(false);
+  });
 });

@@ -22,9 +22,10 @@ const final = {
 };
 const proxy = {
   port: 3456,
+  controllerBaseUrl: "http://127.0.0.2:3456",
   workerBaseUrl: "http://172.30.0.1:3456",
   workerToken: "run-scoped-proxy-token",
-  boundHost: "0.0.0.0",
+  boundHost: "127.0.0.2",
   close: () => Promise.resolve(),
 };
 const originalError = new DshMalformedOutputError("DSH stdout was not one complete JSON value");
@@ -62,7 +63,7 @@ describe("tool-free result formatting", () => {
       );
       expect(fetcher).toHaveBeenCalledOnce();
       const [url, init] = fetcher.mock.calls[0] ?? [];
-      expect(url).toBe("http://127.0.0.1:3456/chat/completions");
+      expect(url).toBe("http://127.0.0.2:3456/chat/completions");
       if (typeof init?.body !== "string") throw new Error("expected a serialized body");
       const body = z.record(z.string(), z.unknown()).parse(JSON.parse(init.body));
       expect(body).toMatchObject({

@@ -22,8 +22,15 @@ import {
   assertValidationSucceeded,
   assertWriteValidationConfigured,
   runValidationCommandsInDocker,
+  type ValidationCommandCountObserver,
+  type CurrentWorkspaceValidation,
 } from "./validate.js";
-import { inspectWorkspaceChanges, type WorkspaceSnapshot } from "./workspace.js";
+import {
+  fingerprintWorkspace,
+  inspectWorkspaceChanges,
+  type WorkspaceSnapshot,
+} from "./workspace.js";
+import { PolicyDeniedError } from "../errors.js";
 import {
   assertEquivalentOperationCommit,
   assertOwnedOperationCommit,
@@ -32,9 +39,13 @@ import {
   type BranchWriteOperationKind,
 } from "./operation-commit.js";
 
+export type RepositoryValidationProvenance =
+  CurrentWorkspaceValidation | { readonly kind: "completed-operation" };
+
 export interface ControllerWriteControl {
   readonly revalidateAuthority: () => Promise<void>;
-  readonly onValidationPassed?: () => void;
+  readonly onValidationPassed?: (validation: RepositoryValidationProvenance) => void;
+  readonly onValidationCommandCount?: ValidationCommandCountObserver;
   readonly validationDeadlineMs?: number;
   readonly signal?: AbortSignal;
   readonly onPhase?: (phase: "validation" | "write") => void;
@@ -126,6 +137,11 @@ async function validateWriteTransaction(
 ): Promise<void> {
   const { validation, control } = options;
   assertWriteValidationConfigured(validation.runTests, validation.commands);
+  const before = await withinValidationDeadline(
+    async () => fingerprintWorkspace(options.workspace.workerRoot),
+    budget,
+  );
+  let commandCount = 0;
   const tests = await withinValidationDeadline(
     async () =>
       runValidationCommandsInDocker(
@@ -135,11 +151,23 @@ async function validateWriteTransaction(
         remainingValidationMs(budget),
         undefined,
         control.signal,
+        (count) => {
+          commandCount = count;
+          control.onValidationCommandCount?.(count);
+        },
       ),
     budget,
   );
   assertValidationSucceeded(tests);
-  control.onValidationPassed?.();
+  const after = await withinValidationDeadline(
+    async () => fingerprintWorkspace(options.workspace.workerRoot),
+    budget,
+  );
+  if (after !== before)
+    throw new PolicyDeniedError(
+      "Workspace changed during Controller write validation; refusing write",
+    );
+  control.onValidationPassed?.({ kind: "current-workspace", fingerprint: after, commandCount });
   throwIfCancelled(control.signal);
   await withinValidationDeadline(async () => revalidateWriteTarget(options), budget);
   await withinValidationDeadline(control.revalidateAuthority, budget);
@@ -240,7 +268,7 @@ export async function executeValidatedRepositoryWrite(
       );
       // The authenticated completed operation was already Controller-validated.
       // Preserve that successful evidence without rerunning tests or mutations.
-      control.onValidationPassed?.();
+      control.onValidationPassed?.({ kind: "completed-operation" });
       return { branch: operation.branch, pullNumber: completed.number, url: completed.url };
     }
     reconciledCommit = await withinValidationDeadline(

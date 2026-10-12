@@ -1,6 +1,7 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer } from "node:http";
 import type { IncomingMessage, Server, ServerResponse } from "node:http";
+import type { AddressInfo } from "node:net";
 
 import { DshConfigurationError, DshProxyError } from "./errors.js";
 import { validatedControllerBaseUrl } from "./base-url.js";
@@ -25,6 +26,8 @@ export interface DeepSeekProxyOptions {
 }
 
 export interface DeepSeekProxyHandle {
+  /** Controller-local address of the actual listener, independent of the worker route. */
+  readonly controllerBaseUrl: string;
   readonly workerBaseUrl: string;
   /** Fixed worker base; the only accepted search endpoint below it is /messages. */
   readonly workerWebSearchBaseUrl?: string;
@@ -293,8 +296,8 @@ async function handleRequest(
   }
 }
 
-async function listen(server: Server, host: string): Promise<number> {
-  return await new Promise<number>((resolve, reject) => {
+async function listen(server: Server, host: string): Promise<AddressInfo> {
+  return await new Promise<AddressInfo>((resolve, reject) => {
     const onError = (error: Error): void => reject(error);
     server.once("error", onError);
     server.listen(0, host, () => {
@@ -304,7 +307,7 @@ async function listen(server: Server, host: string): Promise<number> {
         reject(new DshProxyError("Proxy did not receive a TCP address"));
         return;
       }
-      resolve(address.port);
+      resolve(address);
     });
   });
 }
@@ -355,15 +358,18 @@ export async function startDeepSeekProxy(
     socket.end("HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n");
   });
 
-  let port: number;
+  let address: AddressInfo;
   try {
-    port = await listen(server, bindHost);
+    address = await listen(server, bindHost);
   } catch (error: unknown) {
     throw new DshProxyError("Failed to start the DeepSeek credential proxy", { cause: error });
   }
 
+  const { port } = address;
+  const controllerHost = address.family === "IPv6" ? `[${address.address}]` : address.address;
   let closed = false;
   return {
+    controllerBaseUrl: `http://${controllerHost}:${String(port)}`,
     workerBaseUrl: `http://${workerHost}:${String(port)}`,
     ...(webSearchBase === undefined
       ? {}

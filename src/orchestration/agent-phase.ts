@@ -215,7 +215,7 @@ export async function runAgentPhase(options: AgentPhaseOptions): Promise<RunOutc
       findingsCount: agentResult.output.findings.length,
       validation:
         finalized.kind === "answer" && hasGitHubMutationTools
-          ? successfulValidation(inputs, state.validationIntegrity)
+          ? successfulValidation(state)
           : {
               status: "not-applicable",
               commandCount: 0,
@@ -249,7 +249,7 @@ export async function runAgentPhase(options: AgentPhaseOptions): Promise<RunOutc
     operation: command.operation,
     summary: agentResult.output.summary,
     findingsCount: agentResult.output.findings.length,
-    validation: successfulValidation(inputs, state.validationIntegrity),
+    validation: successfulValidation(state),
     ...taskOutput,
     ...write,
   };

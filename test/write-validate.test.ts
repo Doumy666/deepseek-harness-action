@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { DshConfigurationError } from "../src/dsh/errors.js";
 import {
@@ -12,6 +12,35 @@ import {
 } from "../src/write/validate.js";
 
 describe("trusted-write validation container", () => {
+  it.each(["deadline", "cancelled"] as const)(
+    "does not count an unstarted command after %s exhaustion",
+    async (cause) => {
+      const source = await mkdtemp(join(tmpdir(), "dsh-action-validation-source-"));
+      const process = vi.fn();
+      const counts: number[] = [];
+      const controller = new AbortController();
+      try {
+        if (cause === "cancelled") controller.abort(new Error("External cancellation"));
+        else vi.spyOn(Date, "now").mockReturnValueOnce(1_000).mockReturnValue(2_000);
+        const run = runValidationCommandsInDocker(
+          source,
+          [["npm", "test"]],
+          "docker.io/library/node:24@sha256:" + "a".repeat(64),
+          500,
+          process,
+          controller.signal,
+          (count) => counts.push(count),
+        );
+        if (cause === "cancelled") await expect(run).rejects.toThrow("External cancellation");
+        else await expect(run).resolves.toMatchObject([{ result: { timedOut: true } }]);
+        expect(process).not.toHaveBeenCalled();
+        expect(counts).toEqual([0]);
+      } finally {
+        vi.restoreAllMocks();
+        await rm(source, { force: true, recursive: true });
+      }
+    },
+  );
   it("rejects a mutable image before copying a workspace or starting Docker", async () => {
     await expect(
       runValidationCommandsInDocker("path-that-must-not-be-read", [["npm", "test"]], "node:24"),

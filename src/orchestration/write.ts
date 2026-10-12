@@ -6,6 +6,8 @@ import type { ActionInputs } from "../inputs.js";
 import { throwIfCancelled } from "../lifecycle/cancellation.js";
 import type { WorkspaceSnapshot } from "../write/workspace.js";
 import { issueTaskIdentity, resolveBaseBranch, runUrl } from "./context.js";
+import type { ValidationCommandCountObserver } from "../write/validate.js";
+import type { RepositoryValidationProvenance } from "../write/transaction.js";
 
 export interface WriteOutcome {
   readonly writeStatus: "success" | "partial-success";
@@ -29,7 +31,8 @@ export interface ExecuteWriteOptions {
   readonly validationDeadlineMs: number;
   readonly taskIdentity: string;
   readonly onPhase: (phase: "validation" | "write") => void;
-  readonly onValidationPassed: () => void;
+  readonly onValidationPassed: (validation: RepositoryValidationProvenance) => void;
+  readonly onValidationCommandCount: ValidationCommandCountObserver;
   readonly signal?: AbortSignal;
 }
 
@@ -44,6 +47,7 @@ export async function executeWrite(options: ExecuteWriteOptions): Promise<WriteO
     taskIdentity,
     onPhase,
     onValidationPassed,
+    onValidationCommandCount,
     signal,
   } = options;
   const { client, context, command, policy, snapshot, revalidateAuthority } = authorized;
@@ -82,6 +86,7 @@ export async function executeWrite(options: ExecuteWriteOptions): Promise<WriteO
       onPhase,
       revalidateAuthority,
       onValidationPassed,
+      onValidationCommandCount,
     });
     return {
       writeStatus: "success",
@@ -124,6 +129,7 @@ export async function executeWrite(options: ExecuteWriteOptions): Promise<WriteO
       onPhase,
       revalidateAuthority,
       onValidationPassed,
+      onValidationCommandCount,
     });
     return {
       writeStatus: "success",
@@ -164,6 +170,7 @@ export async function executeWrite(options: ExecuteWriteOptions): Promise<WriteO
       onPhase,
       revalidateAuthority,
       onValidationPassed,
+      onValidationCommandCount,
     });
     return {
       writeStatus: result.status,
@@ -198,6 +205,7 @@ export async function executeWrite(options: ExecuteWriteOptions): Promise<WriteO
       onPhase,
       revalidateAuthority,
       onValidationPassed,
+      onValidationCommandCount,
     });
     return {
       writeStatus: "success",

@@ -72,6 +72,7 @@ export function fakeProxy(): DeepSeekProxyHandle & {
 } {
   const closeMock = vi.fn(() => Promise.resolve());
   return {
+    controllerBaseUrl: "http://127.0.0.1:3456",
     workerBaseUrl: "http://127.0.0.1:3456",
     workerToken: "ephemeral-worker-token",
     boundHost: "127.0.0.1",

@@ -185,6 +185,7 @@ describe("executeWrite", () => {
       taskIdentity: "task-key",
       onPhase: onPhase,
       onValidationPassed: () => undefined,
+      onValidationCommandCount: () => undefined,
     });
 
     expect(write).toEqual({
@@ -232,6 +233,7 @@ describe("executeWrite", () => {
       taskIdentity: "task-key",
       onPhase: vi.fn(),
       onValidationPassed: () => undefined,
+      onValidationCommandCount: () => undefined,
     });
 
     expect(write).toMatchObject({ writeStatus: "success", pullRequestNumber: 12 });
@@ -268,6 +270,7 @@ describe("executeWrite", () => {
       taskIdentity: "task-key",
       onPhase: vi.fn(),
       onValidationPassed: () => undefined,
+      onValidationCommandCount: () => undefined,
     });
 
     expect(write).toEqual({
@@ -310,6 +313,7 @@ describe("executeWrite", () => {
       taskIdentity: "automation-key",
       onPhase: vi.fn(),
       onValidationPassed: () => undefined,
+      onValidationCommandCount: () => undefined,
     });
 
     expect(write).toMatchObject({ writeStatus: "success", branchName: "dsh/task" });
@@ -343,6 +347,7 @@ describe("executeWrite", () => {
         taskIdentity: "task-key",
         onPhase: vi.fn(),
         onValidationPassed: () => undefined,
+        onValidationCommandCount: () => undefined,
       }),
     ).rejects.toThrow("does not support this write operation");
 
@@ -366,6 +371,7 @@ describe("executeWrite", () => {
         taskIdentity: "task-key",
         onPhase: vi.fn(),
         onValidationPassed: () => undefined,
+        onValidationCommandCount: () => undefined,
         signal: controller.signal,
       }),
     ).rejects.toMatchObject({ name: "AbortError" });

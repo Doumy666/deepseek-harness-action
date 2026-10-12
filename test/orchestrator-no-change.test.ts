@@ -42,7 +42,7 @@ const mocks = vi.hoisted(() => ({
   fingerprintWorkspace: vi.fn(),
   inspectValidationIntegrity: vi.fn(),
   enforceValidationIntegrity: vi.fn(),
-  runValidationCommandsInDocker: vi.fn(),
+  runValidationCommandsInDocker: vi.fn<typeof ValidationModule.runValidationCommandsInDocker>(),
   runAgentLoop: vi.fn<typeof AgentLoopModule.runAgentLoop<AnswerFinalization>>(),
   publishTaskAnswer: vi.fn(),
   finishAutomationTask: vi.fn(),
@@ -279,18 +279,24 @@ beforeEach(() => {
     Promise.resolve(input.audit),
   );
   mocks.fingerprintWorkspace.mockResolvedValue("workspace-fingerprint");
-  mocks.runValidationCommandsInDocker.mockResolvedValue([
-    {
-      argv: ["npm", "test"],
-      result: {
-        exitCode: 0,
-        stdout: "ok",
-        stderr: "",
-        timedOut: false,
-        outputTruncated: false,
-      },
+  mocks.runValidationCommandsInDocker.mockImplementation(
+    (_cwd, _commands, _image, _timeout, _runner, _signal, onCommandCount) => {
+      onCommandCount?.(0);
+      onCommandCount?.(1);
+      return Promise.resolve([
+        {
+          argv: ["npm", "test"],
+          result: {
+            exitCode: 0,
+            stdout: "ok",
+            stderr: "",
+            timedOut: false,
+            outputTruncated: false,
+          },
+        },
+      ]);
     },
-  ]);
+  );
   mocks.publishTaskAnswer.mockResolvedValue(4242);
   mocks.runAgentLoop.mockImplementation(async (_task, _inputs, hooks) => {
     const stats: AgentLoopModule.AgentLoopStats = {
@@ -827,18 +833,24 @@ describe("orchestrator task no-change publication", () => {
       mocks.createGitHubClient.mockReturnValueOnce({
         rest: { issues: { setLabels } },
       });
-      mocks.runValidationCommandsInDocker.mockResolvedValueOnce([
-        {
-          argv: ["npm", "test"],
-          result: {
-            exitCode: 1,
-            stdout: "",
-            stderr: "failed",
-            timedOut: false,
-            outputTruncated: false,
-          },
+      mocks.runValidationCommandsInDocker.mockImplementationOnce(
+        (_cwd, _commands, _image, _timeout, _runner, _signal, onCommandCount) => {
+          onCommandCount?.(0);
+          onCommandCount?.(1);
+          return Promise.resolve([
+            {
+              argv: ["npm", "test"],
+              result: {
+                exitCode: 1,
+                stdout: "",
+                stderr: "failed",
+                timedOut: false,
+                outputTruncated: false,
+              },
+            },
+          ]);
         },
-      ]);
+      );
 
       const outcome = await runAction();
 
