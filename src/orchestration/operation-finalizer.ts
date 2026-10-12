@@ -22,6 +22,7 @@ import { inspectWorkspaceChanges } from "../write/workspace.js";
 import { executeWrite, type WriteOutcome } from "./write.js";
 import type { DshRunResult } from "../dsh/runner.js";
 import type { AgentPhaseOptions } from "./agent-phase.js";
+import type { CurrentWorkspaceValidation } from "../write/validate.js";
 
 export type FinalizedOperation =
   | { readonly kind: "review"; readonly publication: Awaited<ReturnType<typeof finishReview>> }
@@ -134,7 +135,10 @@ export async function finalizeAgentOperation(
     state.phase = "validation";
     // An integrity audit alone does not start command validation. Keep any
     // validated baseline evidence when a no-change task proceeds to publication.
-    if (changes.all.length > 0) state.validationPassed = false;
+    if (changes.all.length > 0) {
+      state.validationPassed = false;
+      state.validationCommandCount = 0;
+    }
     remainingControllerMs();
     const validationWorkspace = workspaceCopy;
     const integrity = await withinValidationDeadline(async () =>
@@ -215,6 +219,7 @@ export async function finalizeAgentOperation(
       throw error;
     }
   }
+  let currentValidation: CurrentWorkspaceValidation | undefined;
   const write = await executeWrite({
     authorized,
     inputs,
@@ -226,8 +231,15 @@ export async function finalizeAgentOperation(
     onPhase: (phase) => {
       state.phase = phase;
     },
-    onValidationPassed: () => {
+    onValidationPassed: (validation) => {
       state.validationPassed = true;
+      if (validation.kind === "current-workspace") {
+        currentValidation = validation;
+        state.validationCommandCount = validation.commandCount;
+      }
+    },
+    onValidationCommandCount: (commandCount) => {
+      state.validationCommandCount = commandCount;
     },
     signal,
   });
@@ -239,7 +251,9 @@ export async function finalizeAgentOperation(
   ) {
     githubAuthority.advanceValidatedPullHead(write.commitSha, snapshot.headRef);
   }
-  await githubValidation?.acceptValidatedWorkspaceRevision();
+  if (currentValidation !== undefined) {
+    await githubValidation?.acceptValidatedWorkspaceRevision(currentValidation);
+  }
   await githubAuthority?.flush(remainingControllerMs());
   return { kind: "write", write };
 }

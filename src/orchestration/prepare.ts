@@ -53,7 +53,7 @@ export async function prepareAuthorizedRun(options: {
 }): Promise<PrepareRunResult> {
   const { state, startedAt, inputs, signal } = options;
   throwIfCancelled(signal);
-  state.validationCommandCount = inputs.testCommands.length;
+  state.validationCommandCount = 0;
   core.setSecret(inputs.githubToken);
   core.setSecret(inputs.deepseekApiKey);
   for (const secret of configuredExtensionSecrets(inputs.mcpConfig, inputs.pluginConfig)) {

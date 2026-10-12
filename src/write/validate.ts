@@ -10,7 +10,8 @@ import {
   PolicyDeniedError,
   type ActionErrorIdentity,
 } from "../errors.js";
-import { runCommand, type CommandResult } from "../security/argv.js";
+import { assertSafeArgv, runCommand, type CommandResult } from "../security/argv.js";
+import { throwIfCancelled } from "../lifecycle/cancellation.js";
 import { isIgnoredGeneratedRootEntry } from "./workspace.js";
 
 const VALIDATION_ENV = [
@@ -29,6 +30,16 @@ const VALIDATION_ENV = [
 export type ValidationProcessRunner = (
   options: Parameters<typeof runCommand>[0],
 ) => Promise<CommandResult>;
+
+/** Candidate command invocations; excludes cleanup and synthetic deadline results. */
+export type ValidationCommandCountObserver = (commandCount: number) => void;
+
+/** Execution evidence for the exact Controller workspace that passed this suite. */
+export interface CurrentWorkspaceValidation {
+  readonly kind: "current-workspace";
+  readonly fingerprint: string;
+  readonly commandCount: number;
+}
 
 export interface ValidationResult {
   readonly argv: readonly string[];
@@ -162,10 +173,13 @@ export async function runValidationCommandsInDocker(
   timeoutMs = 10 * 60_000,
   processRunner: ValidationProcessRunner = runCommand,
   signal?: AbortSignal,
+  onCommandCount?: ValidationCommandCountObserver,
 ): Promise<readonly ValidationResult[]> {
   // Repeat the check at this boundary so future callers cannot run
   // trusted-write validation with a mutable image tag.
   assertPinnedContainerImage(containerImage);
+  let commandCount = 0;
+  onCommandCount?.(commandCount);
   const deadline = validationDeadline(timeoutMs);
   const validationParent = await mkdtemp(join(tmpdir(), "dsh-action-validation-"));
   const validationRoot = join(validationParent, "workspace");
@@ -238,6 +252,12 @@ export async function runValidationCommandsInDocker(
         }
       };
       let result: CommandResult;
+      assertSafeArgv("docker", dockerArgs);
+      throwIfCancelled(signal);
+      // Record the call into the external process adapter, including a call
+      // which rejects. This does not claim that Docker started the inner process.
+      commandCount += 1;
+      onCommandCount?.(commandCount);
       try {
         result = await processRunner({
           command: "docker",

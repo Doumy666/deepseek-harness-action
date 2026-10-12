@@ -1,4 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { writeFile } from "node:fs/promises";
+import { join } from "node:path";
 
 import type * as CommandTransport from "../src/security/argv.js";
 import {
@@ -54,7 +56,8 @@ describe("complete Controller write transactions", () => {
     "publishes one owned %s PR and recognizes its completed operation",
     async (operation) => {
       const fixture = await writeFixture();
-      const first = await fixture[operation]();
+      const onValidationCommandCount = vi.fn();
+      const first = await fixture[operation]({ onValidationCommandCount });
       expect(first.pullNumber).toBe(9);
       expect(fixture.refs.get("main")).toBe(baseSha);
       expect(fixture.refs.get(first.branch)).toBe(commitSha);
@@ -63,9 +66,34 @@ describe("complete Controller write transactions", () => {
       );
       const effects = [...fixture.effects];
       expect(effects).toEqual(["blob", "tree", "commit", "create_ref", "pull_request"]);
-      await expect(fixture[operation]()).resolves.toEqual(first);
+      expect(onValidationCommandCount.mock.calls).toEqual([[0], [1]]);
+      expect(fixture.onValidationPassed).toHaveBeenLastCalledWith(
+        expect.objectContaining({ kind: "current-workspace", commandCount: 1 }),
+      );
+      onValidationCommandCount.mockClear();
+      const processCalls = processTransport.run.mock.calls.length;
+      await expect(fixture[operation]({ onValidationCommandCount })).resolves.toEqual(first);
+      expect(onValidationCommandCount).not.toHaveBeenCalled();
+      expect(processTransport.run).toHaveBeenCalledTimes(processCalls);
       expect(fixture.effects).toEqual(effects);
       expect(fixture.onValidationPassed).toHaveBeenCalledTimes(2);
+      expect(fixture.onValidationPassed).toHaveBeenLastCalledWith({ kind: "completed-operation" });
+    },
+  );
+  it.each(["task", "implement", "fix"] as const)(
+    "denies %s when the original workspace changes while its copied candidate is validated",
+    async (operation) => {
+      const fixture = await writeFixture();
+      processTransport.run.mockImplementation(async () => {
+        await writeFile(
+          join(fixture.snapshot.workerRoot, "parser.ts"),
+          "different later candidate\n",
+        );
+        return success;
+      });
+      await expect(fixture[operation]()).rejects.toMatchObject({ code: "POLICY_DENIED" });
+      expect(fixture.onValidationPassed).not.toHaveBeenCalled();
+      expect(fixture.effects).toEqual([]);
     },
   );
   it("updates only the bound PR head without creating a new branch or pull request", async () => {

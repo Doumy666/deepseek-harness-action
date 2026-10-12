@@ -140,8 +140,9 @@ describe("runDsh output", () => {
           startProxy: (options) =>
             startDeepSeekProxy({
               ...options,
-              bindHost: "127.0.0.1",
-              workerHost: "127.0.0.1",
+              // Stand in for the inspected Docker bridge with a distinct local
+              // listener; retain the worker address advertised by the runner.
+              bindHost: "127.0.0.2",
               fetchImplementation: upstream,
             }),
           executeProcess: async (spec) => {
@@ -196,6 +197,7 @@ describe("runDsh output", () => {
       ]) {
         expect(upstreamRequest?.body).not.toContain(excluded);
       }
+      expect(JSON.stringify(workerSpec)).not.toContain("127.0.0.2");
       expect(JSON.stringify(workerSpec)).not.toContain("controller-real-key");
       expect(JSON.stringify(workerSpec)).not.toContain("controller-github-token");
     },

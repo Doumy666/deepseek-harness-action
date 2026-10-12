@@ -173,10 +173,10 @@ export async function repairDshOutput(options: RepairOptions): Promise<DshOutput
   const signal =
     options.signal === undefined ? timeout : AbortSignal.any([options.signal, timeout]);
   try {
-    // Reuse the run-scoped credential proxy via loopback, regardless of the
-    // Docker gateway advertised to the worker. No real credential is copied.
+    // The proxy owns its Controller-local listener address. Reuse the temporary
+    // token without reconstructing a route from the worker's advertised address.
     const response = await (options.fetchImplementation ?? fetch)(
-      `http://127.0.0.1:${String(options.proxy.port)}/chat/completions`,
+      `${options.proxy.controllerBaseUrl}/chat/completions`,
       {
         method: "POST",
         headers: {

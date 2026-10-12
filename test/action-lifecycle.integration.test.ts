@@ -203,18 +203,24 @@ beforeEach(async () => {
   created = github.created;
   published = github.published;
   ports.client.mockReturnValue(githubClientFixture(fixture));
-  ports.validate.mockResolvedValue([
-    {
-      argv: ["node", "--version"],
-      result: {
-        exitCode: 0,
-        stdout: "v24.15.0",
-        stderr: "",
-        timedOut: false,
-        outputTruncated: false,
-      },
+  ports.validate.mockImplementation(
+    (_cwd, _commands, _image, _timeout, _runner, _signal, onCommandCount) => {
+      onCommandCount?.(0);
+      onCommandCount?.(1);
+      return Promise.resolve([
+        {
+          argv: ["node", "--version"],
+          result: {
+            exitCode: 0,
+            stdout: "v24.15.0",
+            stderr: "",
+            timedOut: false,
+            outputTruncated: false,
+          },
+        },
+      ]);
     },
-  ]);
+  );
   ports.session.mockResolvedValue(undefined);
   ports.runDsh.mockImplementation(async (request) => {
     if (request.workspacePath === undefined) throw new Error("Missing worker workspace");

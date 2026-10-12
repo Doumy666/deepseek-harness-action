@@ -52,6 +52,7 @@ export interface AgentRunSummary {
 
 export interface ValidationSummary {
   readonly status: "passed" | "failed" | "skipped" | "not-applicable";
+  /** Invocations in the latest candidate suite, excluding baseline replay and cleanup. */
   readonly commandCount: number;
   readonly integrity?: ValidationIntegritySummary;
 }
