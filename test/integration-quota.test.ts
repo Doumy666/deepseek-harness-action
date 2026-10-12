@@ -1,8 +1,9 @@
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
+import { loadInputs } from "../src/inputs.js";
 
 interface ProbeOptions {
   readonly repository: string;
@@ -34,6 +35,25 @@ async function quotaModule() {
 }
 
 describe("integration writer-profile quota admission", () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  it("selects the owned fixture through the Action's real environment input reader", async () => {
+    const workflow = await readFile(
+      new URL("../.github/workflows/e2e.yml", import.meta.url),
+      "utf8",
+    );
+    const invocation = workflow.split("run_candidate github ")[1]?.split("github_result=")[0];
+    if (invocation === undefined) throw new Error("Missing Issue-tool invocation");
+    const bindings = [...invocation.matchAll(/["'](INPUT_[A-Z0-9-]+)=\$CHECKS_BASE_BRANCH["']/gu)];
+    expect(bindings).toHaveLength(1);
+    vi.stubEnv("INPUT_DEEPSEEK-API-KEY", "synthetic-deepseek-key");
+    vi.stubEnv("INPUT_GITHUB-TOKEN", "synthetic-github-token");
+    vi.stubEnv("INPUT_BASE-BRANCH", "");
+    const name = bindings[0]?.[1];
+    if (name === undefined) throw new Error("Missing fixture branch environment binding");
+    vi.stubEnv(name, "dsh-e2e/checks-base-123-1");
+    expect(loadInputs().baseBranch).toBe("dsh-e2e/checks-base-123-1");
+  });
   it("reads one pinned blob using this job token and reports only quota scalars", async () => {
     const { probeIntegrationQuota } = await quotaModule();
     const calls: { url: string; options: RequestInit | undefined }[] = [];
@@ -183,14 +203,14 @@ describe("integration writer-profile quota admission", () => {
       .split("- name: Exercise routes, filters, structured output, and typed GitHub tools")[1]
       ?.split("- name: Capture bounded business execution evidence")[0];
     const github = integration?.split("run_candidate github ")[1]?.split("github_result=")[0];
-    expect(github).toContain('"INPUT_DEFAULT-BRANCH=$CHECKS_BASE_BRANCH"');
+    expect(github).toContain('"INPUT_BASE-BRANCH=$CHECKS_BASE_BRANCH"');
     expect(integration).toContain(
       '[[ "$(gh api "repos/$REPOSITORY/git/ref/heads/$CHECKS_BASE_BRANCH" --jq .object.sha)" == "$CHECKS_BASE_SHA" ]]',
     );
     const native = integration
       ?.split("run_candidate native_write ")[1]
       ?.split("native_write_result=")[0];
-    expect(native).not.toContain("INPUT_DEFAULT-BRANCH");
+    expect(native).not.toContain("INPUT_BASE-BRANCH");
     expect(native).toContain(
       'INPUT_TEST-COMMANDS=[["npm","ci","--ignore-scripts"],["npm","run","typecheck"],["npm","test"]]',
     );
