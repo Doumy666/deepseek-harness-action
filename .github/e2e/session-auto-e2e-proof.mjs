@@ -340,11 +340,13 @@ function identity(env) {
 // Fixture/qualification reads use this job's GITHUB_TOKEN. Model credentials stay in the Action.
 function githubReader(env) {
   const audit = { credentialScope: "session-e2e-fixture-job-token", apiCommands: 0, retries: 0 };
-  const read = (path, maximum = 1024 * 1024) => {
+  const read = (path, maximum = 1024 * 1024, projection) => {
     requireCheck(audit.apiCommands < 18, "REQUEST_BUDGET");
     audit.apiCommands += 1;
     try {
-      return execFileSync("gh", ["api", "--method", "GET", path], {
+      const args = ["api", "--method", "GET", path];
+      if (projection !== undefined) args.push("--jq", projection);
+      return execFileSync("gh", args, {
         env,
         timeout: 30_000,
         maxBuffer: maximum,
@@ -356,7 +358,7 @@ function githubReader(env) {
   };
   return {
     audit,
-    json: (path) => JSON.parse(read(path).toString("utf8")),
+    json: (path, projection) => JSON.parse(read(path, 1024 * 1024, projection).toString("utf8")),
     archive: (path) => read(path, MAX_ARCHIVE),
   };
 }
@@ -368,6 +370,8 @@ async function prepare(env, directory) {
   for (let page = 1; page <= 10; page++) {
     const listed = reader.json(
       `repos/${current.repository}/actions/workflows/session-auto-e2e.yml/runs?event=workflow_dispatch&per_page=100&page=${page}`,
+      // Selection needs only these headers; source provenance is re-read below in full.
+      '{workflow_runs: (.workflow_runs | if type == "array" then map(if type == "object" then {id, path, event, display_title, status, conclusion} else . end) else . end)} + (if has("total_count") then {total_count} else {} end)',
     );
     requireCheck(
       listed.total_count <= 1000 && Array.isArray(listed.workflow_runs),
