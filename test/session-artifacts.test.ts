@@ -1,3 +1,4 @@
+import { githubClientFixture } from "./helpers/github-client.js";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { basename } from "node:path";
@@ -6,7 +7,6 @@ import { zipSync } from "fflate";
 import { describe, expect, it, vi } from "vitest";
 
 import { PolicyDeniedError } from "../src/errors.js";
-import type { GitHubClient } from "../src/github/client.js";
 import { GitHubQuotaError } from "../src/github/request-policy.js";
 import {
   decodeSessionArchive,
@@ -304,7 +304,7 @@ function fixture() {
     receipts.push(receipt);
   });
   const options: PrepareSessionArtifactsOptions = {
-    client: { rest: api } as unknown as GitHubClient,
+    client: githubClientFixture({ rest: api }),
     binding: { ...binding, workflow: { ...binding.workflow, jobName: "session" } },
     mode: "save",
     currentRun: { runId: 200, runAttempt: 1, workflowSha: sha, actorLogin: "maintainer" },
@@ -824,6 +824,146 @@ describe("Controller Session artifact admission and advance", () => {
       throw failure;
     });
     await expect(prepareSessionArtifacts(f.options)).rejects.toBe(failure);
+    expect(f.receipts[0]).toMatchObject({ kind: "claim", id: 900 });
+    expect(f.uploader.uploadArtifact).toHaveBeenCalledTimes(1);
+  });
+  it("admits one acknowledged claim when its exact metadata becomes visible after a 404", async () => {
+    const f = fixture();
+    f.api.actions.getArtifact.mockImplementationOnce(() => {
+      expect(f.receipts[0]).toMatchObject({ kind: "claim", id: 900 });
+      throw Object.assign(new Error("Not Found"), { status: 404 });
+    });
+    const prepared = await prepareSessionArtifacts(f.options);
+    expect(prepared).toMatchObject({ claimArtifactId: 900, generation: 1, selection: "created" });
+    expect(f.api.actions.getArtifact.mock.calls.map(([request]) => request.artifact_id)).toEqual([
+      900, 900,
+    ]);
+    expect(f.receipts).toHaveLength(1);
+    expect(f.uploader.uploadArtifact).toHaveBeenCalledTimes(1);
+    expect(f.authorizeCurrent).toHaveBeenCalledTimes(1);
+  });
+  it("saves one acknowledged checkpoint when its exact metadata becomes visible after a 404", async () => {
+    const f = fixture();
+    const prepared = await prepareSessionArtifacts(f.options);
+    f.api.actions.getArtifact.mockImplementationOnce(() => {
+      expect(f.receipts[1]).toMatchObject({ kind: "checkpoint", id: 901 });
+      throw Object.assign(new Error("Not Found"), { status: 404 });
+    });
+    const saved = await saveSessionArtifact({
+      prepared,
+      checkpoint: checkpoint(200),
+      deadlineMs: f.options.deadlineMs,
+      signal: f.options.signal,
+    });
+    expect(saved).toMatchObject({ id: 901, generation: 1 });
+    expect(f.api.actions.getArtifact.mock.calls.map(([request]) => request.artifact_id)).toEqual([
+      900, 901, 901,
+    ]);
+    expect(f.receipts.map(({ kind, id }) => ({ kind, id }))).toEqual([
+      { kind: "claim", id: 900 },
+      { kind: "checkpoint", id: 901 },
+    ]);
+    expect(f.uploader.uploadArtifact).toHaveBeenCalledTimes(2);
+    expect(f.authorizeCurrent).toHaveBeenCalledTimes(2);
+  });
+  it("keeps an acknowledged claim but fails closed when metadata remains missing", async () => {
+    const f = fixture();
+    f.api.actions.getArtifact.mockImplementation(() => {
+      throw Object.assign(new Error("Not Found"), { status: 404 });
+    });
+    await expect(prepareSessionArtifacts(f.options)).rejects.toThrow(/bounded confirmation/u);
+    expect(f.api.actions.getArtifact.mock.calls.map(([request]) => request.artifact_id)).toEqual([
+      900, 900, 900, 900, 900,
+    ]);
+    expect(f.receipts[0]).toMatchObject({ kind: "claim", id: 900 });
+    expect(f.uploader.uploadArtifact).toHaveBeenCalledTimes(1);
+  });
+  it("stops acknowledged receipt confirmation at its time bound", async () => {
+    const f = fixture();
+    f.api.actions.getArtifact.mockImplementationOnce(() => {
+      vi.spyOn(Date, "now").mockReturnValue(Date.now() + 5_000);
+      throw Object.assign(new Error("Not Found"), { status: 404 });
+    });
+    try {
+      await expect(prepareSessionArtifacts(f.options)).rejects.toThrow(/bounded confirmation/u);
+      expect(f.api.actions.getArtifact).toHaveBeenCalledTimes(1);
+      expect(f.receipts[0]).toMatchObject({ kind: "claim", id: 900 });
+      expect(f.uploader.uploadArtifact).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
+  it("cancels a pending receipt visibility wait without another read or upload", async () => {
+    const f = fixture();
+    const controller = new AbortController();
+    f.api.actions.getArtifact.mockImplementationOnce(() => {
+      setTimeout(() => controller.abort(new Error("Cancelled receipt confirmation")), 25);
+      throw Object.assign(new Error("Not Found"), { status: 404 });
+    });
+    await expect(
+      prepareSessionArtifacts({ ...f.options, signal: controller.signal }),
+    ).rejects.toThrow(/abort|cancel/iu);
+    expect(f.api.actions.getArtifact).toHaveBeenCalledTimes(1);
+    expect(f.receipts[0]).toMatchObject({ kind: "claim", id: 900 });
+    expect(f.uploader.uploadArtifact).toHaveBeenCalledTimes(1);
+  });
+  it("rejects a late metadata response after the confirmation signal expires", async () => {
+    const f = fixture();
+    const getArtifact = vi.fn(({ request: { signal } }: { request: { signal: AbortSignal } }) => {
+      const uploaded = f.state.current[0];
+      if (uploaded === undefined) throw new Error("Missing uploaded fixture");
+      return new Promise<{ data: ReturnType<typeof f.metadata> }>((resolve) => {
+        signal.addEventListener("abort", () => resolve({ data: uploaded }), { once: true });
+      });
+    });
+    const client = githubClientFixture({
+      rest: { ...f.api, actions: { ...f.api.actions, getArtifact } },
+    });
+    await expect(prepareSessionArtifacts({ ...f.options, client })).rejects.toThrow(/timeout/iu);
+    expect(f.options.signal.aborted).toBe(false);
+    expect(getArtifact).toHaveBeenCalledTimes(1);
+    expect(f.receipts[0]).toMatchObject({ kind: "claim", id: 900 });
+    expect(f.uploader.uploadArtifact).toHaveBeenCalledTimes(1);
+  });
+  it("honors the existing task deadline during acknowledged receipt confirmation", async () => {
+    const f = fixture();
+    f.api.actions.getArtifact.mockImplementationOnce(() => {
+      throw Object.assign(new Error("Not Found"), { status: 404 });
+    });
+    await expect(
+      prepareSessionArtifacts({ ...f.options, deadlineMs: Date.now() + 750 }),
+    ).rejects.toThrow(/abort|timeout/iu);
+    expect(f.api.actions.getArtifact).toHaveBeenCalledTimes(1);
+    expect(f.receipts[0]).toMatchObject({ kind: "claim", id: 900 });
+    expect(f.uploader.uploadArtifact).toHaveBeenCalledTimes(1);
+  });
+  it.each([401, 403, 429, 503])(
+    "preserves an acknowledged claim but does not retry metadata HTTP %i",
+    async (status) => {
+      const f = fixture();
+      const failure = Object.assign(new Error("Artifact metadata rejected"), { status });
+      f.api.actions.getArtifact.mockImplementationOnce(() => {
+        throw failure;
+      });
+      await expect(prepareSessionArtifacts(f.options)).rejects.toBe(failure);
+      expect(f.api.actions.getArtifact).toHaveBeenCalledTimes(1);
+      expect(f.receipts[0]).toMatchObject({ kind: "claim", id: 900 });
+      expect(f.uploader.uploadArtifact).toHaveBeenCalledTimes(1);
+    },
+  );
+  it("rejects a mismatching visible receipt after a 404 without further reads or uploads", async () => {
+    const f = fixture();
+    f.api.actions.getArtifact
+      .mockImplementationOnce(() => {
+        throw Object.assign(new Error("Not Found"), { status: 404 });
+      })
+      .mockImplementationOnce(({ artifact_id }) => {
+        const uploaded = f.state.current.find(({ id }) => id === artifact_id);
+        if (uploaded === undefined) throw new Error("Missing uploaded fixture");
+        return { data: { ...uploaded, digest: `sha256:${"f".repeat(64)}` } };
+      });
+    await expect(prepareSessionArtifacts(f.options)).rejects.toThrow(/fresh GitHub artifact/u);
+    expect(f.api.actions.getArtifact).toHaveBeenCalledTimes(2);
     expect(f.receipts[0]).toMatchObject({ kind: "claim", id: 900 });
     expect(f.uploader.uploadArtifact).toHaveBeenCalledTimes(1);
   });

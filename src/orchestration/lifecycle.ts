@@ -1,12 +1,11 @@
 import * as core from "@actions/core";
 
-import { AgentDeadlineError } from "../agent/loop.js";
+import { AgentDeadlineError } from "../agent/loop-errors.js";
 import type { RoutedCommand } from "../commands/router.js";
 import type { DshComposition, DshMode } from "../dsh/composition.js";
 import { DshAbortedError } from "../dsh/errors.js";
 import type { StickyProgressReporter } from "../github/progress.js";
 import { githubRequestAudit, type GitHubClient } from "../github/client.js";
-import type { ActionInputs } from "../inputs.js";
 import { PHASE_TIMEOUTS, settleWithin } from "../lifecycle/deadline.js";
 import type { PermissionAudit, ToolPolicyAudit } from "../permissions/profile.js";
 import {
@@ -212,12 +211,11 @@ export function outcomeContext(state: RunState, startedAt: number) {
 }
 
 export function successfulValidation(
-  inputs: ActionInputs,
-  integrity?: ValidationIntegritySummary,
+  state: Pick<RunState, "validationCommandCount" | "validationIntegrity">,
 ): ValidationSummary {
   return {
     status: "passed",
-    commandCount: inputs.testCommands.length,
-    ...(integrity === undefined ? {} : { integrity }),
+    commandCount: state.validationCommandCount ?? 0,
+    ...(state.validationIntegrity === undefined ? {} : { integrity: state.validationIntegrity }),
   };
 }
