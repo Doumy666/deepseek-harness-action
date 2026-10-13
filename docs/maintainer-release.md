@@ -427,6 +427,23 @@ If the smoke fails after publication, keep the tag immutable. Diagnose the failu
 
 ## Publish the npm create package
 
+The next independent installer is `0.6.0`, targeting formal Action `v0.10.1`
+with exact DSH `0.2.0-rc.2`. Its source tag is
+`create-deepseek-harness-action-v0.6.0`. Keep the Action SHA and installer source
+SHA unresolved until their respective gates establish them. Do not copy a
+historical release SHA into the new binding.
+
+Qualify the guided public CLI in an existing fresh GitHub repository, from the
+actual archive: no flags must choose read-only PR Review without composition
+questions; Git root/origin and GitHub CLI/login detection, hidden Secret input
+through stdin, generated immutable-SHA workflow, static configuration check,
+separate commit/push confirmations and the first real Action run must pass.
+Record only Secret names/status, never values or input. Test manual login/setup
+resume, unchanged workflow/commit reuse, default-No publication, preservation of
+staged/untracked edits, and the rejection of conflicting workflow/remote state.
+Local Git regressions and mocked remote transport are necessary but do not
+replace this real public first-run gate.
+
 Publish `create-deepseek-harness-action` only after the formal Action tag,
 GitHub Release, and release canary all resolve to `release_sha`. A Git commit
 cannot safely contain its own not-yet-known object ID, so the source package
@@ -510,6 +527,14 @@ template, packed template, and generated workflow has exactly one
 `dsh-version: 0.2.0-rc.2` input; the old `0.1.7-rc.2` pin is rejected by
 the current Action:
 
+The exact allowlisted archive contains `package.json`, `README.md`, `LICENSE`,
+eight runtime modules (`action-inputs.generated.mjs`, `cli.mjs`, `installer.mjs`,
+`guided.mjs`, `process.mjs`, `prompts.mjs`, `publication.mjs`, `workflow-text.mjs`) and six bound
+templates under `dist/templates/`. Reject missing/extra files and symlinks.
+The private guided modules and shared workflow text policy are required runtime files, not optional source
+artifacts. Test `review`, `commands`, `both`, and `session` in both compositions;
+each Session workflow must keep `queue: max` and read-only permissions.
+
 ```bash
 node --input-type=module - "$installer_stage/unpacked/package/package.json" "$installer_version" <<'NODE'
 import assert from "node:assert/strict";
@@ -569,7 +594,7 @@ composition, the native pair explicitly selects `dsh-mode: native`, and every
 file contains exactly one immutable Action reference and the exact audited
 DSH pin. Retain source-template and actual packed-artifact regressions for both
 release binding and runtime-input drift. The deterministic test suite
-separately covers all six `review|commands|both` × `controlled|native`
+separately covers all eight `review|commands|both|session` × `controlled|native`
 combinations; PR feedback about obsolete installer pins must be resolved
 before packing.
 
@@ -582,6 +607,17 @@ case from the official registry with a new cache. Check registry integrity
 and shasum against the qualified tarball and compare the actual archive
 bytes again; a successful local installation does not prove public npm
 installation. Preserve artifacts and resume steps on an external blocker.
+
+The complete public gate must repeat all eight manual mode/composition
+consumers, explicit controlled/native validation consumers, overwrite rejection
+and no-mode non-interactive rejection. Each consumer starts in its own empty
+directory with a new anonymous cache, empty user config, cleared authentication
+and the official registry selected explicitly. Session consumers require the
+matching key/run-name/concurrency, `queue: max`, and read-only permissions.
+Retain the actual qualified tarball bytes and SHA-1/SHA-256/SHA-512 integrity
+metadata; after publication compare the fetched official archive byte-for-byte
+and rerun those consumers. Registry metadata or an authenticated cached install
+cannot replace fresh anonymous consumer evidence.
 
 Only after those checks pass, authenticate to the official npm registry and
 publish that exact tarball. Do not publish from the source directory because

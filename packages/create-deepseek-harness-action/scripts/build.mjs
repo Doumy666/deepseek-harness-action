@@ -56,7 +56,16 @@ if (releaseSha === undefined || !/^[0-9a-f]{40}$/u.test(releaseSha)) {
 }
 
 const destination = outputDirectory(process.argv.slice(2));
-const runtimeFiles = ["action-inputs.generated.mjs", "cli.mjs", "installer.mjs"];
+const runtimeFiles = [
+  "action-inputs.generated.mjs",
+  "cli.mjs",
+  "installer.mjs",
+  "guided.mjs",
+  "process.mjs",
+  "prompts.mjs",
+  "publication.mjs",
+  "workflow-text.mjs",
+];
 const sourceTemplateFiles = ["dsh-review.yml", "dsh-commands.yml", "dsh-session.yml"];
 const runtime = new Map();
 const templates = new Map();

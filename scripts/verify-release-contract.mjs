@@ -61,8 +61,8 @@ const manifest = JSON.parse(manifestText);
 const lock = JSON.parse(lockText);
 const installerManifest = JSON.parse(installerManifestText);
 const installerLock = JSON.parse(installerLockText);
-const installerVersion = "0.5.0";
-const installerActionTag = "v0.10.0";
+const installerVersion = "0.6.0";
+const installerActionTag = "v0.10.1";
 const installerSourceTag = `create-deepseek-harness-action-v${installerVersion}`;
 const installerReleaseBinding = "DSH_ACTION_RELEASE_SHA";
 const directDependencies = {
@@ -288,6 +288,19 @@ assert.ok(
     ),
   "installer CLI must expose native as an opt-in and keep controlled as the default",
 );
+assert.ok(
+  installerRuntime.includes("--advanced") && installerRuntime.includes("runGuidedSetup"),
+  "installer must retain both guided first-run and explicit advanced/manual entry points",
+);
+for (const runtime of [
+  "guided.mjs",
+  "process.mjs",
+  "prompts.mjs",
+  "publication.mjs",
+  "workflow-text.mjs",
+]) {
+  assert.ok(installerBuild.includes(`"${runtime}"`), `installer build must include ${runtime}`);
+}
 for (const expected of ["dsh-review-native.yml", "dsh-commands-native.yml"]) {
   assert.ok(installerRuntime.includes(expected), `installer runtime is missing: ${expected}`);
 }
@@ -369,6 +382,7 @@ for (const expected of [
   "run-name: dsh-session-${{ inputs.session_key }}",
   "group: dsh-session-${{ inputs.session_key }}",
   "cancel-in-progress: false",
+  "queue: max",
   "session-mode: auto",
   "session-key: ${{ inputs.session_key }}",
   "actions: read",
