@@ -22,12 +22,26 @@ input and a fresh consumer, rather than only changing a constant.
 | Session JSON complexity                     | depth 40; 200,000 nodes; 20,000 array items | Limit nested traversal and expanded references independently of encoded bytes.                                                                                   |
 | Known Session secrets                       | 256                                         | Inspect all admitted credential representations within a finite work budget; exceeding it fails closed.                                                          |
 | Session retention                           | 1–7 days, default 3                         | Keep checkpoints short-lived. Expired history cannot silently become a new conversation with the same key.                                                       |
+| Acknowledged Session artifact confirmation  | 5 reads, 1 second apart, within 5 seconds   | Confirm an SDK-acknowledged artifact ID without repeating its upload. Only metadata 404s are retried; the task deadline and cancellation still win.              |
 
 Source owners are [lifecycle/deadline.ts](../src/lifecycle/deadline.ts),
 [dsh/docker-policy.ts](../src/dsh/docker-policy.ts),
 [result/outputs.ts](../src/result/outputs.ts), and
 [session contracts](../src/session/contracts.ts) /
-[checkpoint inspection](../src/session/checkpoint.ts).
+[checkpoint inspection](../src/session/checkpoint.ts) /
+[artifact transport](../src/session/artifact-store.ts).
+
+The artifact SDK can confirm an upload before its metadata is readable through
+the GitHub REST endpoint. The short confirmation window limits extra API traffic
+to four reads beyond the initial check and occupies at most one sixth of the
+existing 30-second artifact phase. It confirms an acknowledged effect and never
+repeats an upload. The confirmation loop does not retry authentication, quota or
+other HTTP failures; a visible receipt must still pass every identity, size,
+digest, provenance and retention check. If confirmation exhausts its bound or is
+cancelled, the recorded artifact ID remains available for effect reconciliation
+and the task fails closed.
+Each physical confirmation read contributes to the existing GitHub request count.
+These are fresh metadata reads, distinct from transport retries and SDK uploads.
 
 Automatic Session history verification currently reads at most 1,000 runs for
 its workflow and requires a complete, stable listing. Repository/run artifact

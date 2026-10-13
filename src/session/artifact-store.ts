@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { crc32, inflateRawSync } from "node:zlib";
 
 import { PolicyDeniedError } from "../errors.js";
@@ -183,6 +184,9 @@ interface ArtifactMetadata {
     readonly head_sha?: string;
   } | null;
 }
+const UPLOAD_CONFIRMATION_ATTEMPTS = 5;
+const UPLOAD_CONFIRMATION_INTERVAL_MS = 1_000;
+const UPLOAD_CONFIRMATION_TIMEOUT_MS = 5_000;
 export interface SessionArtifactUploader {
   uploadArtifact(
     name: string,
@@ -637,11 +641,12 @@ async function upload(
       result.size > MAX_SESSION_ARCHIVE_BYTES
     )
       denied("Confirmed Session upload has an incomplete or invalid size/digest receipt");
-    const response = await options.client.rest.actions.getArtifact({
-      ...args(verification.binding, signal),
-      artifact_id: result.id,
-    });
-    const artifact = response.data;
+    const artifact = await confirmUploadedArtifact(
+      options.client,
+      verification.binding,
+      result.id,
+      signal,
+    );
     assertArtifactMetadata(artifact, verification.binding, verification.current, true);
     if (
       artifact.id !== result.id ||
@@ -669,6 +674,43 @@ async function upload(
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+}
+
+/** Confirm a known SDK effect; never repeat its upload or relax receipt validation. */
+async function confirmUploadedArtifact(
+  client: GitHubClient,
+  binding: SessionBinding,
+  artifactId: number,
+  outerSignal: AbortSignal,
+): Promise<ArtifactMetadata> {
+  const deadlineMs = Date.now() + UPLOAD_CONFIRMATION_TIMEOUT_MS;
+  const signal = AbortSignal.any([
+    outerSignal,
+    AbortSignal.timeout(UPLOAD_CONFIRMATION_TIMEOUT_MS),
+  ]);
+  for (let attempt = 1; attempt <= UPLOAD_CONFIRMATION_ATTEMPTS; attempt++) {
+    signal.throwIfAborted();
+    if (Date.now() >= deadlineMs) break;
+    try {
+      const response = await client.rest.actions.getArtifact({
+        ...args(binding, signal),
+        artifact_id: artifactId,
+      });
+      signal.throwIfAborted();
+      if (Date.now() >= deadlineMs) break;
+      return response.data;
+    } catch (error: unknown) {
+      signal.throwIfAborted();
+      if (record(error).status !== 404) throw error;
+      if (attempt === UPLOAD_CONFIRMATION_ATTEMPTS || Date.now() >= deadlineMs) break;
+      await delay(Math.min(UPLOAD_CONFIRMATION_INTERVAL_MS, deadlineMs - Date.now()), undefined, {
+        signal,
+      });
+    }
+  }
+  return denied(
+    "Acknowledged Session artifact metadata is still unavailable after bounded confirmation; inspect the recorded artifact ID before another task",
+  );
 }
 
 export async function prepareSessionArtifacts(
