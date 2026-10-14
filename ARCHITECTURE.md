@@ -138,6 +138,10 @@ it cannot add capability to a running Agent.
 The DSH engine belongs to the DSH adapter. Controlled Profile rows and tool
 policy hooks stay inside that adapter; generic extension package resolution
 serves both real compositions.
+The engine lifecycle interface carries one complete turn-result type. The DSH
+adapter returns its existing result directly, and the Agent loop validates the
+business output while retaining the remaining execution evidence. There is no
+separate metadata format to split and reconstruct across this seam.
 
 DSH resource ownership stays run-scoped. Controlled and native compositions may
 share installation and environment preparation, while their tool-policy owners

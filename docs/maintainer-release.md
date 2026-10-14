@@ -91,7 +91,7 @@ npm ci
 npm run check
 ```
 
-`npm run check` runs formatting, lint, type checking, coverage tests, the release-contract check, DSH patch compatibility, and a deterministic `dist` build comparison. Do not skip a failing sub-check.
+`npm run check` runs formatting, lint, type checking, coverage tests, the release-contract check, DSH patch compatibility, a deterministic `dist` build comparison, and bundled-notice verification against the rebuilt source maps. Do not skip a failing sub-check.
 
 The deterministic invariant/model matrix covers composition mode, trust,
 permission profile, isolation, extension authority and Controller GitHub authority.
