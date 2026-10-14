@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -5,7 +6,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
 import type * as DshModule from "../src/dsh/runner.js";
 import type * as GitHubClientModule from "../src/github/client.js";
-import type * as ValidationModule from "../src/write/validate.js";
+import type * as ProcessModule from "../src/security/argv.js";
 import { DshProcessError } from "../src/dsh/errors.js";
 import { runAction } from "../src/orchestrator.js";
 import { SessionCheckpointError } from "../src/session/errors.js";
@@ -15,11 +16,12 @@ import { githubClientFixture } from "./helpers/github-client.js";
 import { actionLifecycleGitHub } from "./helpers/action-lifecycle-github.js";
 import type { ReviewFinding } from "../src/review/schema.js";
 import { record } from "../src/security/record.js";
+import { buildActionOutputs, formatStepSummary } from "../src/result.js";
 
 const ports = vi.hoisted(() => ({
   client: vi.fn(),
   runDsh: vi.fn<typeof DshModule.runDsh>(),
-  validate: vi.fn<typeof ValidationModule.runValidationCommandsInDocker>(),
+  process: vi.fn<typeof ProcessModule.runCommand>(),
   session: vi.fn(),
 }));
 vi.mock("../src/github/client.js", async (original) => ({
@@ -30,9 +32,9 @@ vi.mock("../src/dsh/runner.js", async (original) => ({
   ...(await original<typeof DshModule>()),
   runDsh: ports.runDsh,
 }));
-vi.mock("../src/write/validate.js", async (original) => ({
-  ...(await original<typeof ValidationModule>()),
-  runValidationCommandsInDocker: ports.validate,
+vi.mock("../src/security/argv.js", async (original) => ({
+  ...(await original<typeof ProcessModule>()),
+  runCommand: ports.process,
 }));
 // Session transport and ownership are exercised separately by the Controller Session suite.
 vi.mock("../src/session/controller.js", () => ({ createControllerSession: ports.session }));
@@ -53,6 +55,8 @@ function checkpointSession(save: () => Promise<void>): ControllerSession {
 const base = "a".repeat(40);
 const tree = "b".repeat(40);
 const commit = "c".repeat(40);
+const controllerDeepSeekKey = "sk-fixture-controller-secret";
+const controllerGitHubToken = "ghs_fixture-controller-secret";
 let created: ReturnType<typeof actionLifecycleGitHub>["created"];
 let published: ReturnType<typeof actionLifecycleGitHub>["published"];
 let fixtureRoot: string;
@@ -177,8 +181,53 @@ function readonlyWorkerResult(
   };
 }
 
+function issueMutationTransport() {
+  let labels: readonly string[] = [];
+  let assignees: readonly string[] = [];
+  const setLabels = vi.fn((request: { labels: readonly string[] }) => {
+    labels = request.labels;
+    return Promise.resolve({ data: [] });
+  });
+  const updateIssue = vi.fn((request: { assignees: readonly string[] }) => {
+    assignees = request.assignees;
+    return Promise.resolve({ data: {} });
+  });
+  ports.client.mockReturnValue(
+    githubClientFixture({
+      ...fixture,
+      rest: {
+        ...fixture.rest,
+        repos: { ...fixture.rest?.repos, get: () => Promise.resolve({ data: repository }) },
+        issues: {
+          ...fixture.rest?.issues,
+          get: () =>
+            Promise.resolve({
+              data: {
+                ...issue,
+                state_reason: null,
+                labels: labels.map((name) => ({ name })),
+                assignees: assignees.map((login) => ({ login })),
+              },
+            }),
+          setLabels,
+          update: updateIssue,
+        },
+      },
+    }),
+  );
+  return { setLabels, updateIssue, labels: () => labels };
+}
+
+const passedProcess: ProcessModule.CommandResult = {
+  exitCode: 0,
+  stdout: "passed",
+  stderr: "",
+  timedOut: false,
+  outputTruncated: false,
+};
+
 beforeEach(async () => {
-  vi.clearAllMocks();
+  vi.resetAllMocks();
   permission = "write";
   fixtureRoot = await mkdtemp(join(tmpdir(), "dsh-action-lifecycle-"));
   const eventPath = join(fixtureRoot, "event.json");
@@ -202,8 +251,8 @@ beforeEach(async () => {
     GITHUB_REPOSITORY: "octo/repo",
     GITHUB_EVENT_PATH: eventPath,
     GITHUB_WORKSPACE: fixtureRoot,
-    "INPUT_DEEPSEEK-API-KEY": "sk-fixture-controller-secret",
-    "INPUT_GITHUB-TOKEN": "ghs_fixture-controller-secret",
+    "INPUT_DEEPSEEK-API-KEY": controllerDeepSeekKey,
+    "INPUT_GITHUB-TOKEN": controllerGitHubToken,
     INPUT_COMMAND: "task",
     INPUT_PROMPT: "Create hello.txt",
     "INPUT_TASK-ACCESS": "write",
@@ -218,24 +267,7 @@ beforeEach(async () => {
   created = github.created;
   published = github.published;
   ports.client.mockReturnValue(githubClientFixture(fixture));
-  ports.validate.mockImplementation(
-    (_cwd, _commands, _image, _timeout, _runner, _signal, onCommandCount) => {
-      onCommandCount?.(0);
-      onCommandCount?.(1);
-      return Promise.resolve([
-        {
-          argv: ["node", "--version"],
-          result: {
-            exitCode: 0,
-            stdout: "v24.15.0",
-            stderr: "",
-            timedOut: false,
-            outputTruncated: false,
-          },
-        },
-      ]);
-    },
-  );
+  ports.process.mockResolvedValue(passedProcess);
   ports.session.mockReturnValue(undefined);
   ports.runDsh.mockImplementation(async (request) => {
     if (request.workspacePath === undefined) throw new Error("Missing worker workspace");
@@ -265,8 +297,248 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   vi.unstubAllEnvs();
   await rm(fixtureRoot, { recursive: true, force: true });
+});
+
+it.each([
+  ["missing commands", "INPUT_TEST-COMMANDS", "[]", "test-commands"],
+  ["run-tests=false", "INPUT_RUN-TESTS", "false", "run-tests=false"],
+  ["allow-write=false", "INPUT_ALLOW-WRITE", "false", "allow-write=true"],
+])(
+  "denies write configuration with %s before external work",
+  async (_label, name, value, diagnostic) => {
+    vi.stubEnv(name, value);
+    const outcome = await runAction();
+    expect(outcome).toMatchObject({
+      conclusion: "failure",
+      error: {
+        code: "POLICY_DENIED",
+        category: "policy",
+        phase: "configuration",
+        retryable: false,
+      },
+    });
+    expect(outcome.error?.message).toContain(diagnostic);
+    const outputs = buildActionOutputs(outcome);
+    expect(outputs["error-code"]).toBe("POLICY_DENIED");
+    expect(record(JSON.parse(String(outputs["result-json"]))).status).toBe("denied");
+    expect(ports.client).not.toHaveBeenCalled();
+    expect(ports.runDsh).not.toHaveBeenCalled();
+    expect(ports.process).not.toHaveBeenCalled();
+    expect(published.comment).not.toHaveBeenCalled();
+    for (const effect of Object.values(created)) expect(effect).not.toHaveBeenCalled();
+  },
+);
+
+it.each(["main", "release/next"])(
+  "materializes the immutable %s head rather than live runner files",
+  async (branch) => {
+    if (branch !== "main") vi.stubEnv("INPUT_BASE-BRANCH", branch);
+    const boundSha = branch === "main" ? base : "e".repeat(40);
+    const blobSha = "d".repeat(40);
+    await writeFile(join(fixtureRoot, "runner-only.txt"), "runner state");
+    const getRef = vi.fn(() => Promise.resolve({ data: { object: { sha: boundSha } } }));
+    const getCommit = vi.fn(() =>
+      Promise.resolve({ data: { sha: boundSha, tree: { sha: tree } } }),
+    );
+    ports.client.mockReturnValue(
+      githubClientFixture({
+        ...fixture,
+        rest: {
+          ...fixture.rest,
+          git: {
+            ...fixture.rest?.git,
+            getRef,
+            getCommit,
+            getTree: () =>
+              Promise.resolve({
+                data: {
+                  sha: tree,
+                  truncated: false,
+                  tree: [
+                    { path: "baseline.txt", type: "blob", mode: "100644", sha: blobSha, size: 10 },
+                  ],
+                },
+              }),
+            getBlob: () =>
+              Promise.resolve({
+                data: {
+                  sha: blobSha,
+                  encoding: "base64",
+                  content: Buffer.from("immutable\n").toString("base64"),
+                },
+              }),
+          },
+        },
+      }),
+    );
+    ports.runDsh.mockImplementationOnce(async ({ workspacePath }) => {
+      if (workspacePath === undefined) throw new Error("Missing worker workspace");
+      expect(await readFile(join(workspacePath, "baseline.txt"), "utf8")).toBe("immutable\n");
+      await expect(readFile(join(workspacePath, "runner-only.txt"))).rejects.toThrow();
+      return readonlyWorkerResult("final");
+    });
+
+    const outcome = await runAction();
+    expect(outcome, JSON.stringify(outcome.error)).toMatchObject({
+      conclusion: "success",
+      writeStatus: "no-changes",
+    });
+    expect(getRef).toHaveBeenCalledWith(expect.objectContaining({ ref: `heads/${branch}` }));
+    expect(getCommit).toHaveBeenCalledWith(expect.objectContaining({ commit_sha: boundSha }));
+    expect(ports.process).not.toHaveBeenCalled();
+    for (const effect of Object.values(created)) expect(effect).not.toHaveBeenCalled();
+  },
+);
+
+it("does not publish a no-change answer after the Controller deadline expires", async () => {
+  await selectEntity("task", "issue");
+  vi.stubEnv("INPUT_TIMEOUT-MINUTES", "1");
+  let now = Date.now();
+  vi.spyOn(Date, "now").mockImplementation(() => now);
+  ports.runDsh.mockImplementationOnce(() => {
+    now += 61_000;
+    return Promise.resolve(readonlyWorkerResult("final"));
+  });
+  const outcome = await runAction();
+  expect(outcome).toMatchObject({
+    conclusion: "failure",
+    error: { code: "AGENT_TIMEOUT", category: "runtime" },
+  });
+  expect(published.comment).not.toHaveBeenCalled();
+  expect(ports.process).not.toHaveBeenCalled();
+  for (const effect of Object.values(created)) expect(effect).not.toHaveBeenCalled();
+});
+
+it.each(["controlled", "native"] as const)(
+  "validates before the %s worker and defers metadata effects until finalization",
+  async (mode) => {
+    await selectEntity("task", "issue");
+    vi.stubEnv("INPUT_DSH-MODE", mode);
+    vi.stubEnv("INPUT_ALLOWED-TOOLS", '["workspace.edit","github.issue.labels.set"]');
+    const metadata = issueMutationTransport();
+    const worker = readonlyWorkerResult("final", mode);
+    ports.runDsh.mockImplementationOnce(() => {
+      expect(ports.process).toHaveBeenCalledOnce();
+      expect(metadata.labels()).toEqual([]);
+      return Promise.resolve({
+        ...worker,
+        output: {
+          ...worker.output,
+          state: "needs_tool",
+          toolRequest: { id: "github.issue.labels.set", input: { labels: ["triaged"] } },
+        },
+      });
+    });
+    ports.runDsh.mockImplementationOnce(() => {
+      expect(metadata.labels()).toEqual([]);
+      return Promise.resolve(worker);
+    });
+
+    const outcome = await runAction();
+    expect(outcome, JSON.stringify(outcome.error)).toMatchObject({
+      conclusion: "success",
+      validation: { status: "passed", commandCount: 1 },
+      agent: {
+        turns: 2,
+        toolCalls: 1,
+        toolReceipts: [
+          {
+            id: "github.issue.labels.set",
+            ok: true,
+            effect: "updated",
+            attempts: 1,
+            reconciled: true,
+          },
+        ],
+      },
+    });
+    expect(ports.process).toHaveBeenCalledOnce();
+    expect(metadata.labels()).toEqual(["triaged"]);
+    expect(metadata.setLabels).toHaveBeenCalledOnce();
+    for (const effect of Object.values(created)) expect(effect).not.toHaveBeenCalled();
+  },
+);
+
+it.each(["controlled", "native"] as const)(
+  "prevents the %s worker and metadata effects when baseline validation fails",
+  async (mode) => {
+    await selectEntity("task", "issue");
+    vi.stubEnv("INPUT_DSH-MODE", mode);
+    vi.stubEnv("INPUT_ALLOWED-TOOLS", '["workspace.edit","github.issue.labels.set"]');
+    const metadata = issueMutationTransport();
+    ports.process.mockResolvedValueOnce({ ...passedProcess, exitCode: 1, stderr: "suite failed" });
+    const outcome = await runAction();
+    expect(outcome).toMatchObject({
+      conclusion: "failure",
+      validation: { status: "failed", commandCount: 1 },
+      error: { code: "VALIDATION_FAILED", phase: "validation" },
+    });
+    expect(ports.process.mock.calls.filter(([{ args }]) => args[0] === "run")).toHaveLength(1);
+    expect(ports.runDsh).not.toHaveBeenCalled();
+    expect(metadata.labels()).toEqual([]);
+    expect(metadata.setLabels).not.toHaveBeenCalled();
+    expect(published.comment).not.toHaveBeenCalled();
+    for (const effect of Object.values(created)) expect(effect).not.toHaveBeenCalled();
+  },
+);
+
+it("retains partial metadata effects and final receipts when a later postcondition fails", async () => {
+  await selectEntity("task", "issue");
+  vi.stubEnv(
+    "INPUT_ALLOWED-TOOLS",
+    '["workspace.edit","github.issue.labels.set","github.issue.assignees.set"]',
+  );
+  const metadata = issueMutationTransport();
+  // Acknowledged transport success is insufficient when a fresh read lacks its postcondition.
+  metadata.updateIssue.mockResolvedValue({ data: {} });
+  const worker = readonlyWorkerResult("final");
+  ports.runDsh.mockResolvedValueOnce({
+    ...worker,
+    output: {
+      ...worker.output,
+      state: "needs_tool",
+      toolRequest: { id: "github.issue.labels.set", input: { labels: ["triaged"] } },
+    },
+  });
+  ports.runDsh.mockResolvedValueOnce({
+    ...worker,
+    output: {
+      ...worker.output,
+      state: "needs_tool",
+      toolRequest: { id: "github.issue.assignees.set", input: { assignees: ["alice"] } },
+    },
+  });
+  ports.runDsh.mockResolvedValueOnce(worker);
+
+  const outcome = await runAction();
+  expect(outcome).toMatchObject({
+    conclusion: "failure",
+    writeStatus: "partial-success",
+    error: { phase: "write" },
+    agent: {
+      turns: 3,
+      toolCalls: 2,
+      toolReceipts: [
+        { id: "github.issue.labels.set", ok: true, effect: "updated", attempts: 1 },
+        {
+          id: "github.issue.assignees.set",
+          ok: false,
+          effect: "scheduled",
+          attempts: 1,
+          externalEffect: "confirmed",
+          error: true,
+        },
+      ],
+    },
+  });
+  expect(metadata.labels()).toEqual(["triaged"]);
+  expect(metadata.setLabels).toHaveBeenCalledOnce();
+  expect(metadata.updateIssue).toHaveBeenCalledOnce();
+  expect(published.comment).not.toHaveBeenCalled();
+  for (const effect of Object.values(created)) expect(effect).not.toHaveBeenCalled();
 });
 
 it("returns a blocked task without validation, repository writes or saving a Session", async () => {
@@ -280,7 +552,7 @@ it("returns a blocked task without validation, repository writes or saving a Ses
     validation: { status: "not-applicable", commandCount: 0 },
   });
   expect(save).not.toHaveBeenCalled();
-  expect(ports.validate).not.toHaveBeenCalled();
+  expect(ports.process).not.toHaveBeenCalled();
   for (const effect of Object.values(created)) expect(effect).not.toHaveBeenCalled();
 });
 
@@ -303,7 +575,7 @@ it.each(["controlled", "native"] as const)(
         policyOwner: "dsh",
         observedTools: ["grep", "read"],
       });
-    expect(ports.validate).not.toHaveBeenCalled();
+    expect(ports.process).not.toHaveBeenCalled();
     for (const effect of Object.values(created)) expect(effect).not.toHaveBeenCalled();
   },
 );
@@ -321,7 +593,7 @@ it("keeps a passed Gateway baseline when a no-change task loses publication auth
     validation: { status: "passed", commandCount: 1, integrity: { status: "clean" } },
     error: { code: "POLICY_DENIED", phase: "publication" },
   });
-  expect(ports.validate).toHaveBeenCalledOnce();
+  expect(ports.process).toHaveBeenCalledOnce();
   expect(published.comment).not.toHaveBeenCalled();
   for (const effect of Object.values(created)) expect(effect).not.toHaveBeenCalled();
 });
@@ -351,7 +623,7 @@ it("keeps failed native worker evidence and known usage without publishing a wri
     policyOwner: "dsh",
     observedTools: ["grep", "read"],
   });
-  expect(ports.validate).not.toHaveBeenCalled();
+  expect(ports.process).not.toHaveBeenCalled();
   for (const effect of Object.values(created)) expect(effect).not.toHaveBeenCalled();
 });
 
@@ -387,7 +659,7 @@ it.each(["controlled", "native"] as const)(
       validation: { status: "not-applicable", commandCount: 0, integrity: { status: "clean" } },
       error: { code: "POLICY_DENIED", phase: "publication" },
     });
-    expect(ports.validate).not.toHaveBeenCalled();
+    expect(ports.process).not.toHaveBeenCalled();
     for (const effect of Object.values(created)) expect(effect).not.toHaveBeenCalled();
   },
 );
@@ -567,7 +839,7 @@ it("publishes a current-head review and projects selected inline and summary-onl
   const summaryBody = record(published.comment.mock.calls[0]?.[0]).body;
   expect(summaryBody).toContain("Related source needs attention");
   expect(summaryBody).not.toContain("Uncertain observation");
-  expect(ports.validate).not.toHaveBeenCalled();
+  expect(ports.process).not.toHaveBeenCalled();
   for (const effect of Object.values(created)) expect(effect).not.toHaveBeenCalled();
 });
 
@@ -599,35 +871,87 @@ it("publishes a bounded CI diagnosis from failed checks through the real read li
     "DeepSeek Harness CI diagnosis",
   );
   expect(published.inline).not.toHaveBeenCalled();
-  expect(ports.validate).not.toHaveBeenCalled();
+  expect(ports.process).not.toHaveBeenCalled();
   for (const effect of Object.values(created)) expect(effect).not.toHaveBeenCalled();
 });
 
-it("completes a write task with no repository changes and preserves its structured task output", async () => {
-  vi.stubEnv(
-    "INPUT_TASK-OUTPUT-SCHEMA",
-    '{"type":"object","properties":{"needsChange":{"type":"boolean"}},"required":["needsChange"],"additionalProperties":false}',
-  );
-  const result = readonlyWorkerResult("final");
-  ports.runDsh.mockResolvedValue({
-    ...result,
-    output: { ...result.output, taskOutput: { needsChange: false } },
-  });
-  const outcome = await runAction();
-  expect(outcome).toMatchObject({
-    conclusion: "success",
-    operation: "task",
-    writeStatus: "no-changes",
-    changedPaths: [],
-    taskOutput: { needsChange: false },
-    validation: { status: "not-applicable", commandCount: 0, integrity: { status: "clean" } },
-  });
-  expect(ports.validate).not.toHaveBeenCalled();
-  for (const effect of Object.values(created)) expect(effect).not.toHaveBeenCalled();
-});
+it.each(["controlled", "native"] as const)(
+  "completes a %s write task with no repository changes and preserves its public output",
+  async (mode) => {
+    vi.stubEnv("INPUT_DSH-MODE", mode);
+    vi.stubEnv(
+      "INPUT_TASK-OUTPUT-SCHEMA",
+      '{"type":"object","properties":{"needsChange":{"type":"boolean"}},"required":["needsChange"],"additionalProperties":false}',
+    );
+    const result = readonlyWorkerResult("final", mode);
+    ports.runDsh.mockResolvedValue({
+      ...result,
+      output: { ...result.output, taskOutput: { needsChange: false } },
+    });
+    const outcome = await runAction();
+    expect(outcome).toMatchObject({
+      conclusion: "success",
+      operation: "task",
+      writeStatus: "no-changes",
+      changedPaths: [],
+      taskOutput: { needsChange: false },
+      validation: { status: "not-applicable", commandCount: 0, integrity: { status: "clean" } },
+      authority: {
+        schemaVersion: 1,
+        scope: "action-known-sources",
+        knownSources: [
+          {
+            kind: "controller-credential",
+            service: "github",
+            holder: "controller",
+            credentialExposure: "not-exposed-to-worker",
+          },
+          {
+            kind: "controller-credential",
+            service: "deepseek",
+            holder: "controller",
+            credentialExposure: "not-exposed-to-worker",
+            mediation: "run-scoped-proxy",
+          },
+        ],
+      },
+    });
+    if (mode === "native") {
+      expect(outcome.dsh).toEqual({ mode: "native", composition: "dsh-native-headless" });
+      expect(outcome.permission?.network).toBe("mediated-web");
+      expect(outcome.toolPolicy).toEqual({
+        schemaVersion: 1,
+        policyOwner: "dsh",
+        observedTools: ["grep", "read"],
+      });
+    } else {
+      expect(outcome.toolPolicy).toMatchObject({
+        schemaVersion: 1,
+        policyOwner: "controller",
+        requestedTools: ["workspace.edit", "workspace.read", "workspace.search"],
+        effectiveTools: ["workspace.edit", "workspace.read", "workspace.search"],
+        deniedTools: [],
+      });
+    }
+    const outputs = buildActionOutputs(outcome);
+    for (const surface of [
+      JSON.stringify(outcome),
+      String(outputs["result-json"]),
+      formatStepSummary(outcome),
+    ]) {
+      for (const secret of [controllerDeepSeekKey, controllerGitHubToken]) {
+        expect(surface).not.toContain(secret);
+        expect(surface).not.toContain(createHash("sha256").update(secret).digest("hex"));
+      }
+    }
+    expect(ports.process).not.toHaveBeenCalled();
+    for (const effect of Object.values(created)) expect(effect).not.toHaveBeenCalled();
+  },
+);
 
 it("answers an Issue write task with no changes using a tracked comment instead of a PR", async () => {
   await selectEntity("task", "issue");
+  vi.stubEnv("INPUT_PROGRESS-COMMENT", "true");
   ports.runDsh.mockResolvedValue(readonlyWorkerResult("final"));
   const outcome = await runAction();
   expect(outcome).toMatchObject({
@@ -643,7 +967,7 @@ it("answers an Issue write task with no changes using a tracked comment instead 
   expect(record(published.comment.mock.calls[0]?.[0]).body).toContain(
     "<!-- dsh-action:v1 kind=task -->",
   );
-  expect(ports.validate).not.toHaveBeenCalled();
+  expect(ports.process).not.toHaveBeenCalled();
   for (const effect of Object.values(created)) expect(effect).not.toHaveBeenCalled();
 });
 
@@ -801,5 +1125,5 @@ it("retains a published diagnosis when its Session checkpoint fails", async () =
     error: { code: "SESSION_CHECKPOINT", phase: "publication" },
   });
   expect(published.comment).toHaveBeenCalledOnce();
-  expect(ports.validate).not.toHaveBeenCalled();
+  expect(ports.process).not.toHaveBeenCalled();
 });
