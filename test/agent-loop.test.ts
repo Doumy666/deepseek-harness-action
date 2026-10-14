@@ -19,8 +19,12 @@ import {
 } from "../src/dsh/errors.js";
 import type { DshOutput } from "../src/dsh/schema.js";
 import { parseTaskOutputSchema } from "../src/dsh/task-output.js";
-import { createDshRuntime, disposeDshRuntime, type DshRuntime } from "../src/dsh/runner.js";
-import type { DshTurnMetadata } from "../src/dsh/engine.js";
+import {
+  createDshRuntime,
+  disposeDshRuntime,
+  type DshRunResult,
+  type DshRuntime,
+} from "../src/dsh/runner.js";
 import type { AgentTask } from "../src/agent/loop-contracts.js";
 import { DshAgentEngine } from "../src/dsh/engine.js";
 import { createDshFixtureManager } from "./helpers/dsh-runner-fixtures.js";
@@ -31,7 +35,7 @@ import { inputs } from "./helpers.js";
 const lifecycleFixtures = createDshFixtureManager();
 afterEach(lifecycleFixtures.dispose);
 
-const isolation: DshTurnMetadata["isolationReport"] = {
+const isolation: DshRunResult["isolationReport"] = {
   backend: "docker",
   credentialMediated: true,
   repoToolsEnabled: true,
@@ -41,6 +45,40 @@ const isolation: DshTurnMetadata["isolationReport"] = {
   extensionProfile: "github-action",
   limitations: [],
 };
+
+const workerEvidence = {
+  durationMs: 37,
+  isolationReport: isolation,
+  rawStdout: "worker terminal evidence",
+  usage: {
+    source: "headless-worker",
+    completeness: "complete",
+    reportedSteps: 1,
+    observedSteps: 1,
+    tokens: { inputTokens: 100, outputTokens: 20 },
+  },
+  extensionAudit: {
+    schemaVersion: 1,
+    profile: "github-action",
+    digest: "a".repeat(64),
+    network: false,
+    entries: [],
+  },
+  toolReceipts: [
+    {
+      schemaVersion: 1,
+      callId: "mcp-evidence",
+      id: "mcp.fixture.lookup",
+      runtimeName: "mcp__fixture__lookup",
+      provider: "mcp",
+      counted: true,
+      completed: true,
+      ok: true,
+      durationMs: 2,
+    },
+  ],
+  observedTools: ["glob", "read"],
+} satisfies Omit<DshRunResult, "output">;
 
 const runtime: DshRuntime = {
   root: "runtime",
@@ -116,7 +154,7 @@ function task(contextPacket: unknown = { identity: "TASK-ID" }): AgentTask {
 function engine(
   responses: readonly DshOutput[],
   requests: AgentTurnRequest[],
-): AgentEngine<DshOutput, DshTurnMetadata> {
+): AgentEngine<DshRunResult> {
   let index = 0;
   return {
     id: "fake",
@@ -129,7 +167,7 @@ function engine(
       return Promise.resolve({
         output: next,
         durationMs: 10,
-        metadata: { isolationReport: isolation },
+        isolationReport: isolation,
       });
     },
   };
@@ -138,7 +176,7 @@ function engine(
 function repairTurnFailureEngine(
   error: Error,
   requests: AgentTurnRequest[],
-): AgentEngine<DshOutput, DshTurnMetadata> {
+): AgentEngine<DshRunResult> {
   let turn = 0;
   return {
     id: "fake-repair-failure",
@@ -150,7 +188,7 @@ function repairTurnFailureEngine(
       return Promise.resolve({
         output: output("final"),
         durationMs: 10,
-        metadata: { isolationReport: isolation },
+        isolationReport: isolation,
       });
     },
   };
@@ -269,20 +307,18 @@ describe("Controller Session lifecycle hooks", () => {
                 turn === 1
                   ? output("needs_tool", { toolRequest: { id: "command.test", input: {} } })
                   : output("final"),
-              metadata: {
-                isolationReport: isolation,
-                ...(turn === 1
-                  ? {}
-                  : {
-                      usage: {
-                        source: "headless-worker" as const,
-                        completeness: "complete" as const,
-                        reportedSteps: 1,
-                        observedSteps: 1,
-                        tokens: { inputTokens: 100, outputTokens: 20 },
-                      },
-                    }),
-              },
+              isolationReport: isolation,
+              ...(turn === 1
+                ? {}
+                : {
+                    usage: {
+                      source: "headless-worker" as const,
+                      completeness: "complete" as const,
+                      reportedSteps: 1,
+                      observedSteps: 1,
+                      tokens: { inputTokens: 100, outputTokens: 20 },
+                    },
+                  }),
             });
           },
         }),
@@ -325,18 +361,16 @@ describe("Controller Session lifecycle hooks", () => {
                 turn === 1
                   ? output("needs_tool", { toolRequest: { id: "command.test", input: {} } })
                   : output("final"),
-              metadata: {
-                isolationReport: isolation,
-                usage: {
-                  source: "headless-worker" as const,
-                  completeness: "complete" as const,
-                  reportedSteps: 1,
-                  observedSteps: 1,
-                  tokens:
-                    turn === 1
-                      ? { inputTokens: 100, outputTokens: 20, cacheReadTokens: 300 }
-                      : { inputTokens: 50, outputTokens: 5 },
-                },
+              isolationReport: isolation,
+              usage: {
+                source: "headless-worker" as const,
+                completeness: "complete" as const,
+                reportedSteps: 1,
+                observedSteps: 1,
+                tokens:
+                  turn === 1
+                    ? { inputTokens: 100, outputTokens: 20, cacheReadTokens: 300 }
+                    : { inputTokens: 50, outputTokens: 5 },
               },
             });
           },
@@ -376,7 +410,7 @@ describe("Controller Session lifecycle hooks", () => {
               return {
                 output: output("final"),
                 durationMs: 13 * 60_000,
-                metadata: { isolationReport: isolation },
+                isolationReport: isolation,
               };
             },
           }),
@@ -605,6 +639,38 @@ function validationIntegrityFailure(): ValidationIntegrityError {
 }
 
 describe("controller-owned agent loop", () => {
+  it("preserves complete worker evidence while validating the final business output", async () => {
+    const finalize = vi.fn(() => Promise.resolve("published"));
+    const onState = vi.fn();
+    const result = await runAgentLoop(
+      task(),
+      inputs(),
+      {
+        deadlineMs: Date.now() + 60_000,
+        blocked: () => Promise.resolve("blocked"),
+        finalize,
+        onState,
+      },
+      {
+        createRuntime: () => Promise.resolve(runtime),
+        disposeRuntime: () => Promise.resolve(),
+        createEngine: () => ({
+          id: "evidence-fixture",
+          version: "1",
+          runTurn: () =>
+            Promise.resolve({
+              ...workerEvidence,
+              output: output("final", { summary: "  Validated answer  " }),
+            }),
+        }),
+      },
+    );
+    expect(result.agent).toMatchObject(workerEvidence);
+    expect(result.agent.output.summary).toBe("Validated answer");
+    expect(finalize).toHaveBeenCalledWith(result.agent, expect.any(Number));
+    expect(onState).toHaveBeenCalledWith(result.agent, expect.objectContaining({ turns: 1 }));
+  });
+
   it("revalidates configured taskOutput at the Controller-owned outer loop", async () => {
     const taskOutputSchema = parseTaskOutputSchema(
       JSON.stringify({
@@ -856,7 +922,7 @@ describe("controller-owned agent loop", () => {
     expect(disposeRuntime).toHaveBeenCalledOnce();
   });
 
-  it("keeps MCP receipts across fresh multi-turn DSH workers", async () => {
+  it("retains final evidence and accumulates usage and receipts across fresh DSH workers", async () => {
     let turn = 0;
     const provider: ToolProvider = {
       id: "command",
@@ -882,33 +948,46 @@ describe("controller-owned agent loop", () => {
           runTurn: () => {
             turn += 1;
             return Promise.resolve({
+              ...workerEvidence,
               output:
                 turn === 1
                   ? output("needs_tool", { toolRequest: { id: "command.test", input: {} } })
                   : output("final"),
               durationMs: 10,
-              metadata: {
-                isolationReport: isolation,
-                toolReceipts: [
-                  {
-                    schemaVersion: 1,
-                    callId: `mcp-turn-${String(turn)}`,
-                    id: "mcp.fixture.lookup",
-                    runtimeName: "mcp__fixture__lookup",
-                    provider: "mcp",
-                    counted: true,
-                    completed: true,
-                    ok: true,
-                    durationMs: 2,
-                  },
-                ],
-              },
+              rawStdout: `worker terminal evidence for turn ${String(turn)}`,
+              toolReceipts: [
+                {
+                  schemaVersion: 1,
+                  callId: `mcp-turn-${String(turn)}`,
+                  id: "mcp.fixture.lookup",
+                  runtimeName: "mcp__fixture__lookup",
+                  provider: "mcp",
+                  counted: true,
+                  completed: true,
+                  ok: true,
+                  durationMs: 2,
+                },
+              ],
             });
           },
         }),
       },
     );
     expect(result.finalization).toBe("done");
+    expect(result.agent).toMatchObject({
+      durationMs: 20,
+      isolationReport: isolation,
+      rawStdout: "worker terminal evidence for turn 2",
+      extensionAudit: workerEvidence.extensionAudit,
+      observedTools: ["glob", "read"],
+      usage: {
+        source: "headless-worker",
+        completeness: "complete",
+        reportedSteps: 2,
+        observedSteps: 2,
+        tokens: { inputTokens: 200, outputTokens: 40 },
+      },
+    });
     expect(result.agent.toolReceipts?.map(({ callId }) => callId)).toEqual([
       "mcp-turn-1",
       "mcp-turn-2",
@@ -946,10 +1025,8 @@ describe("controller-owned agent loop", () => {
                   ? output("needs_tool", { toolRequest: { id: "command.test", input: {} } })
                   : output("final"),
               durationMs: 10,
-              metadata: {
-                isolationReport: isolation,
-                observedTools: turn === 1 ? ["read", "glob"] : ["grep", "read"],
-              },
+              isolationReport: isolation,
+              observedTools: turn === 1 ? ["read", "glob"] : ["grep", "read"],
             });
           },
         }),
@@ -1382,7 +1459,7 @@ describe("controller-owned agent loop", () => {
       'import { writeFileSync } from "node:fs"; process.on("SIGTERM", () => setTimeout(() => process.exit(0), 25)); writeFileSync("worker-ready", String(process.pid)); function alive(){ setTimeout(alive, 1000); } alive();',
     );
     const policy = { ...task().policy, trust: "trusted-read" as const };
-    const realEngine: AgentEngine<DshOutput, DshTurnMetadata> = new DshAgentEngine(
+    const realEngine: AgentEngine<DshRunResult> = new DshAgentEngine(
       inputs({
         isolation: "none",
         dshExecutable: executable,
@@ -1427,7 +1504,13 @@ describe("controller-owned agent loop", () => {
       if (workerPid === undefined) throw new Error("Worker did not publish its PID");
       const stoppedPid = workerPid;
       expect(() => process.kill(stoppedPid, 0)).toThrow();
-      expect(await execution).toBeInstanceOf(DshAbortedError);
+      const cancelled = await execution;
+      expect(cancelled).toBeInstanceOf(DshAbortedError);
+      expect(cancelled).toMatchObject({
+        telemetry: {
+          isolationReport: { backend: "none", credentialMediated: true },
+        },
+      });
       await expect(realEngine.runTurn(turnRequest)).rejects.toThrow(/disposed DSH engine/u);
     } finally {
       controller.abort();
@@ -1470,57 +1553,98 @@ describe("controller-owned agent loop", () => {
     expect(states.at(-1)).toEqual({ toolCalls: 1, receipts: 1, error: true });
   });
 
-  it("publishes DSH failure telemetry with incomplete runtime receipts", async () => {
-    const onEngineFailure = vi.fn();
-    const error = new DshProcessError(9, null, "crashed").attachTelemetry({
-      durationMs: 25,
-      isolationReport: isolation,
-      observedTools: ["read", "glob"],
-      toolReceipts: [
-        {
-          schemaVersion: 1,
-          callId: "mcp-crash",
-          id: "mcp.fixture.lookup",
-          runtimeName: "mcp__fixture__lookup",
-          provider: "mcp",
-          counted: true,
-          completed: false,
-          ok: false,
-          durationMs: 0,
-          code: "ACTION_TOOL_INCOMPLETE",
-        },
-      ],
-    });
-    await expect(
-      runAgentLoop(
-        task(),
-        inputs(),
-        {
-          deadlineMs: Date.now() + 60_000,
-          blocked: () => Promise.resolve("blocked"),
-          finalize: () => Promise.resolve("done"),
-          onEngineFailure,
-        },
-        {
-          createRuntime: () => Promise.resolve(runtime),
-          disposeRuntime: () => Promise.resolve(),
-          createEngine: () => ({
-            id: "failing-dsh",
-            version: "1",
-            runTurn: () => Promise.reject(error),
-          }),
-        },
-      ),
-    ).rejects.toBe(error);
-    expect(onEngineFailure).toHaveBeenCalledWith(
-      expect.objectContaining({
+  it.each(["failure", "cancellation"] as const)(
+    "retains completed evidence alongside DSH %s telemetry and incomplete receipts",
+    async (completion) => {
+      const onEngineFailure = vi.fn();
+      const onState = vi.fn();
+      let turn = 0;
+      const error = (
+        completion === "failure" ? new DshProcessError(9, null, "crashed") : new DshAbortedError()
+      ).attachTelemetry({
         durationMs: 25,
-        observedTools: ["glob", "read"],
-        toolReceipts: [expect.objectContaining({ callId: "mcp-crash", completed: false })],
-      }),
-      expect.objectContaining({ turns: 1 }),
-    );
-  });
+        isolationReport: isolation,
+        usage: workerEvidence.usage,
+        extensionAudit: workerEvidence.extensionAudit,
+        observedTools: ["read", "grep"],
+        toolReceipts: [
+          {
+            schemaVersion: 1,
+            callId: "mcp-crash",
+            id: "mcp.fixture.lookup",
+            runtimeName: "mcp__fixture__lookup",
+            provider: "mcp",
+            counted: true,
+            completed: false,
+            ok: false,
+            durationMs: 0,
+            code: "ACTION_TOOL_INCOMPLETE",
+          },
+        ],
+      });
+      await expect(
+        runAgentLoop(
+          task(),
+          inputs({ maxTurns: 2 }),
+          {
+            deadlineMs: Date.now() + 60_000,
+            toolProvider: {
+              id: "command",
+              manifest: () => [],
+              invoke: (call) => Promise.resolve({ ...call, ok: true, output: {} }),
+            },
+            blocked: () => Promise.resolve("blocked"),
+            finalize: () => Promise.resolve("done"),
+            onEngineFailure,
+            onState,
+          },
+          {
+            createRuntime: () => Promise.resolve(runtime),
+            disposeRuntime: () => Promise.resolve(),
+            createEngine: () => ({
+              id: "failing-dsh",
+              version: "1",
+              runTurn: () => {
+                turn += 1;
+                return turn === 1
+                  ? Promise.resolve({
+                      ...workerEvidence,
+                      output: output("needs_tool", {
+                        toolRequest: { id: "command.test", input: {} },
+                      }),
+                    })
+                  : Promise.reject(error);
+              },
+            }),
+          },
+        ),
+      ).rejects.toBe(error);
+      expect(onState).toHaveBeenCalledWith(
+        expect.objectContaining(workerEvidence),
+        expect.objectContaining({ turns: 1 }),
+      );
+      expect(onEngineFailure).toHaveBeenCalledWith(
+        expect.objectContaining({
+          durationMs: 62,
+          isolationReport: isolation,
+          extensionAudit: workerEvidence.extensionAudit,
+          usage: {
+            source: "headless-worker",
+            completeness: "complete",
+            reportedSteps: 2,
+            observedSteps: 2,
+            tokens: { inputTokens: 200, outputTokens: 40 },
+          },
+          observedTools: ["glob", "grep", "read"],
+          toolReceipts: [
+            expect.objectContaining({ callId: "mcp-evidence", completed: true }),
+            expect.objectContaining({ callId: "mcp-crash", completed: false }),
+          ],
+        }),
+        expect.objectContaining({ turns: 2 }),
+      );
+    },
+  );
 
   it("fails closed when the model requests a tool without an authorized provider", async () => {
     await expect(
