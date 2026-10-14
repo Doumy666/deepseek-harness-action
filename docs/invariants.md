@@ -41,8 +41,9 @@ Result projection preserves completed validation evidence. An integrity audit
 on a no-change task does not start command validation; a later publication
 failure cannot turn unexecuted configured commands into failed validation.
 
-Evidence: `test/github-tools.test.ts`, `test/orchestrator-no-change.test.ts`,
-`test/write-finalizers.integration.test.ts` and `test/write-transactions.integration.test.ts`.
+Evidence: `test/github-tools.test.ts`, `test/action-lifecycle.integration.test.ts`,
+`test/action-validation-evidence.integration.test.ts`, `test/write-finalizers.integration.test.ts`
+and `test/write-transactions.integration.test.ts`.
 
 ## INV-005 NativeInventoryIsObservedNotGranted
 

@@ -41,17 +41,11 @@ export interface AgentTurnRequest {
   readonly signal?: AbortSignal;
 }
 
-export interface AgentTurnResponse<TOutput = unknown, TMetadata = unknown> {
-  readonly output: TOutput;
-  readonly durationMs: number;
-  readonly metadata: TMetadata;
-}
-
-/** Provider-neutral seam implemented by the current DSH headless adapter. */
-export interface AgentEngine<TOutput = unknown, TMetadata = unknown> {
+/** Turn execution and shutdown share one run-scoped engine owner. */
+export interface AgentEngine<TResult> {
   readonly id: string;
   readonly version: string;
-  runTurn(request: AgentTurnRequest): Promise<AgentTurnResponse<TOutput, TMetadata>>;
+  runTurn(request: AgentTurnRequest): Promise<TResult>;
   /** Shut down active turns, including on failure; borrowed resource owners may retain late activity leases. */
   dispose?(): Promise<void>;
 }

@@ -5,6 +5,21 @@ versioning for published action releases.
 
 ## Unreleased
 
+- Deduplicates Review findings by their final source identity before applying
+  the unique finding limit, preserving the highest-ranked opinion and existing
+  thread identity across reruns and source movement.
+- Reads trusted Session workflows through their immutable Git path instead of
+  recursively scanning unrelated repository files. Large repositories no longer
+  hit the former 5,000-entry limit. Queue guidance and manual examples retain
+  pending same-key runs without invalidating old workflows or checkpoints.
+- Passes complete DSH turn results through the engine lifecycle interface,
+  removing duplicate metadata types and field-by-field result reconstruction.
+- Replaces implementation-coupled no-change and Session Controller tests with
+  behavior coverage using real internal policy, validation and state transitions.
+- Regenerates notices for all statically bundled dependency versions, including
+  reviewed offline sources and explicitly labeled declaration-only packages.
+  The complete check now verifies notice drift after the normal build.
+
 - Updates compatible MCP SDK, proxy address, cache semantics and source-map
   dependencies while retaining the exact DSH family. The current dependency
   security review records the two advisories still constrained by upstream pins.

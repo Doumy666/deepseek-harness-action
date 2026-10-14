@@ -25,6 +25,7 @@
     "build": "ncc build src/index.ts -o dist --minify --source-map --no-cache",
     "build:check": "npm run build && git diff --exit-code -- dist/ && git diff --cached --exit-code -- dist/",
     "generate:action-contract": "node scripts/generate-action-contract.mjs --write",
+    "generate:bundled-notices": "node scripts/generate-bundled-notices.mjs",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "lint": "eslint . --max-warnings=0",
@@ -33,9 +34,10 @@
     "test:dsh-config": "node scripts/verify-dsh-config.mjs",
     "check:config": "node scripts/check-config.mjs",
     "test:release-contract": "node scripts/verify-release-contract.mjs",
+    "test:bundled-notices": "node scripts/generate-bundled-notices.mjs --check",
     "test:coverage": "vitest run --coverage",
     "typecheck": "tsc --noEmit",
-    "check": "npm run test:generated && npm run format:check && npm run lint && npm run typecheck && npm run test:coverage && npm run test:release-contract && npm run test:dsh-config && npm run build:check"
+    "check": "npm run test:generated && npm run format:check && npm run lint && npm run typecheck && npm run test:coverage && npm run test:release-contract && npm run test:dsh-config && npm run build:check && npm run test:bundled-notices"
   },
   "dependencies": {
     "@actions/artifact": "6.2.1",

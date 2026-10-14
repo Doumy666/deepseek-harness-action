@@ -82,6 +82,7 @@ export interface PrepareSessionArtifactsOptions {
   readonly signal: AbortSignal;
   readonly authorizeCurrent: () => Promise<void>;
   readonly onUploadReceipt?: (receipt: SessionUploadReceipt) => void;
+  readonly onWorkflowWarning?: (message: string) => void;
   readonly uploader?: SessionArtifactUploader;
   readonly fetchArchive?: typeof fetch;
 }
@@ -618,6 +619,10 @@ export async function prepareSessionArtifacts(
     false,
     signal,
   );
+  if (current.singlePendingSlot)
+    options.onWorkflowWarning?.(
+      "Session workflow concurrency omits queue: max or uses queue: single. Add queue: max to keep later same-key requests from cancelling a pending run and blocking continuation. Existing workflows and checkpoints remain compatible.",
+    );
   const binding = {
     ...options.binding,
     workflow: { ...options.binding.workflow, jobName: current.jobName },
