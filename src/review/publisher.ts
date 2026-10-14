@@ -157,9 +157,40 @@ function findDiffAnchorContext(diff: ParsedDiff, location: InlineLocation): stri
   return undefined;
 }
 
+interface PublicationFinding {
+  readonly finding: ReviewFinding;
+  readonly location: InlineLocation | null;
+  readonly fingerprint: string;
+}
+
+function selectPublicationFindings(
+  diff: ParsedDiff,
+  findings: readonly ReviewFinding[],
+  maximum: number,
+): PublicationFinding[] {
+  if (!Number.isSafeInteger(maximum) || maximum < 0 || maximum > 100) {
+    throw new RangeError("maxFindings must be an integer between 0 and 100");
+  }
+  const selected: PublicationFinding[] = [];
+  const seen = new Set<string>();
+  for (const finding of filterHighPrecisionFindings(findings)) {
+    if (selected.length === maximum) break;
+    const location = mapFinding(diff, finding);
+    const anchorContext = location === null ? undefined : findDiffAnchorContext(diff, location);
+    const fingerprint = fingerprintFinding({
+      ...finding,
+      ...(anchorContext === undefined ? {} : { anchorContext }),
+    });
+    if (seen.has(fingerprint)) continue;
+    seen.add(fingerprint);
+    selected.push({ finding, location, fingerprint });
+  }
+  return selected;
+}
+
 function formatSummary(
   result: ReviewResult,
-  findings: readonly ReviewFinding[],
+  findings: readonly PublicationFinding[],
   outcome: PublicationResult,
   target: PublicationTarget,
 ): string {
@@ -179,26 +210,24 @@ function formatSummary(
       ...outcome.failures.map((failure) => `- ${safeBody(failure)}`),
     );
   }
-  void findings;
   lines.push("", `<sub>[Workflow run](${target.runUrl}) · dsh-action</sub>`);
   return lines.join("\n").slice(0, GITHUB_BODY_LIMIT);
 }
 
-function formatSummaryWithDiff(
+function formatSummaryWithFindings(
   result: ReviewResult,
-  findings: readonly ReviewFinding[],
+  findings: readonly PublicationFinding[],
   outcome: PublicationResult,
   target: PublicationTarget,
-  diff: ParsedDiff,
   fallbackFindings: ReadonlySet<ReviewFinding>,
 ): string {
   const base = formatSummary(result, findings, outcome, target);
   const summaryFindings = findings.filter(
-    (finding) => mapFinding(diff, finding) === null || fallbackFindings.has(finding),
+    ({ finding, location }) => location === null || fallbackFindings.has(finding),
   );
   if (summaryFindings.length === 0) return base;
   const rendered = summaryFindings.map(
-    (finding) =>
+    ({ finding }) =>
       `- ${severityIcon(finding.severity)} **${safeBody(finding.title)}** — \`${sanitizeMarkdownPath(finding.path)}:${String(finding.line)}\`\n  ${safeBody(finding.body)}`,
   );
   return `${base}\n\n### Findings carried in the summary\n\n${rendered.join("\n")}`.slice(
@@ -217,7 +246,7 @@ export async function publishPullRequestReview(
 ): Promise<PublicationResult> {
   if (snapshot.headSha.length !== 40) throw new Error("A full immutable head SHA is required");
   const diff = buildDiff(snapshot);
-  const findings = filterHighPrecisionFindings(result.findings, { maxFindings });
+  const findings = selectPublicationFindings(diff, result.findings, maxFindings);
   let inlinePublished = 0;
   let inlineUpdated = 0;
   let duplicatesSkipped = 0;
@@ -242,18 +271,12 @@ export async function publishPullRequestReview(
     });
     const existing = indexTrackingComments(existingComments, target.expectedAuthorId).findings;
 
-    for (const finding of findings) {
+    for (const { finding, location, fingerprint } of findings) {
       await assertPullRequestSnapshotCurrent(client, target.owner, target.repo, snapshot);
-      const location = mapFinding(diff, finding);
       if (location === null) {
         summaryOnly += 1;
         continue;
       }
-      const anchorContext = findDiffAnchorContext(diff, location);
-      const fingerprint = fingerprintFinding({
-        ...finding,
-        ...(anchorContext === undefined ? {} : { anchorContext }),
-      });
       const body = findingBody(finding, fingerprint);
       const prior = existing.get(fingerprint);
       const priorMatchesLocation =
@@ -273,6 +296,7 @@ export async function publishPullRequestReview(
               body,
             });
             inlineUpdated += 1;
+            existing.set(fingerprint, { ...prior, body });
           }
         } else if (prior !== undefined) {
           // GitHub cannot relocate an existing inline thread to another commit.
@@ -282,7 +306,7 @@ export async function publishPullRequestReview(
           summaryOnly += 1;
           fallbackFindings.add(finding);
         } else {
-          await client.rest.pulls.createReviewComment({
+          const response = await client.rest.pulls.createReviewComment({
             owner: target.owner,
             repo: target.repo,
             pull_number: target.pullNumber,
@@ -296,6 +320,7 @@ export async function publishPullRequestReview(
               : { start_line: location.startLine, start_side: location.startSide }),
           });
           inlinePublished += 1;
+          existing.set(fingerprint, response.data);
         }
       } catch (error) {
         failures.push(
@@ -315,7 +340,7 @@ export async function publishPullRequestReview(
       { owner: target.owner, repo: target.repo, issueNumber: target.pullNumber },
       target.expectedAuthorId,
       "summary",
-      formatSummaryWithDiff(result, findings, publication, target, diff, fallbackFindings),
+      formatSummaryWithFindings(result, findings, publication, target, fallbackFindings),
     );
     return publication;
   } catch (error) {

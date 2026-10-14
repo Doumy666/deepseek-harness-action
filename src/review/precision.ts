@@ -1,4 +1,3 @@
-import { fingerprintFinding } from "./fingerprint.js";
 import type { ReviewCategory, ReviewFinding, ReviewSeverity } from "./schema.js";
 
 const DEFAULT_CATEGORIES = new Set<ReviewCategory>([
@@ -19,19 +18,17 @@ const SEVERITY_ORDER: Readonly<Record<ReviewSeverity, number>> = {
 
 export interface PrecisionOptions {
   minConfidence?: number;
-  maxFindings?: number;
   requireEvidence?: boolean;
   categories?: ReadonlySet<ReviewCategory>;
   severities?: ReadonlySet<ReviewSeverity>;
 }
 
-/** Keep only evidence-backed, high-confidence actionable findings. */
+/** Rank eligible findings; publication owns source identity and its unique limit. */
 export function filterHighPrecisionFindings(
   findings: readonly ReviewFinding[],
   options: PrecisionOptions = {},
 ): ReviewFinding[] {
   const minimum = options.minConfidence ?? 0.8;
-  const maximum = options.maxFindings ?? 20;
   const requireEvidence = options.requireEvidence ?? true;
   const categories = options.categories ?? DEFAULT_CATEGORIES;
   const severities = options.severities ?? DEFAULT_SEVERITIES;
@@ -39,11 +36,6 @@ export function filterHighPrecisionFindings(
   if (!Number.isFinite(minimum) || minimum < 0 || minimum > 1) {
     throw new RangeError("minConfidence must be between 0 and 1");
   }
-  if (!Number.isSafeInteger(maximum) || maximum < 0 || maximum > 100) {
-    throw new RangeError("maxFindings must be an integer between 0 and 100");
-  }
-
-  const seen = new Set<string>();
   return findings
     .filter(
       (finding) =>
@@ -59,14 +51,7 @@ export function filterHighPrecisionFindings(
         left.path.localeCompare(right.path) ||
         left.line - right.line ||
         left.title.localeCompare(right.title),
-    )
-    .filter((finding) => {
-      const fingerprint = fingerprintFinding(finding);
-      if (seen.has(fingerprint)) return false;
-      seen.add(fingerprint);
-      return true;
-    })
-    .slice(0, maximum);
+    );
 }
 
 export const selectHighPrecisionFindings = filterHighPrecisionFindings;
