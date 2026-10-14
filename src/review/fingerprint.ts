@@ -53,5 +53,3 @@ export function fingerprintFinding(finding: FingerprintableFinding): string {
   ]);
   return createHash("sha256").update(canonical, "utf8").digest("hex");
 }
-
-export const createFindingFingerprint = fingerprintFinding;

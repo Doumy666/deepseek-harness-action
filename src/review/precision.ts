@@ -53,5 +53,3 @@ export function filterHighPrecisionFindings(
         left.title.localeCompare(right.title),
     );
 }
-
-export const selectHighPrecisionFindings = filterHighPrecisionFindings;

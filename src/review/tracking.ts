@@ -111,5 +111,3 @@ export function indexTrackingComments<T extends TrackableComment>(
   }
   return result;
 }
-
-export const buildTrackingIndex = indexTrackingComments;
