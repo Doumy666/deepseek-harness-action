@@ -55,6 +55,7 @@ on:
 concurrency:
   group: dsh-session-${{ inputs.session_key }}
   cancel-in-progress: false
+  queue: max
 # In the single producing Action step:
 # with:
 #   session-mode: auto
@@ -68,6 +69,13 @@ the group suffix and the run-name suffix are identical literal values. Other
 expressions, mismatched key expressions and cancellation are rejected. Explicit
 save/resume workflows continue to use the literal group `dsh-session` with
 `cancel-in-progress: false`.
+
+Use `queue: max` to retain multiple pending requests. Without it, GitHub replaces
+the previous pending request when another arrives; the cancelled history can
+block the active save and later continuation. The Action warns once during
+current-run preparation when `queue` is omitted or `single`. Existing workflows
+and historical checkpoints remain compatible. GitHub still limits this queue
+to 100 pending runs.
 
 Use exactly one
 Session-producing Action step in one statically named job. Matrix producers and
@@ -93,6 +101,11 @@ if a permission change removes or changes those grants, resume is incompatible
 and requires a new key. Changing extension configuration or credentials can also
 change the digest. Current permissions are still recomputed for every compatible
 resume.
+
+The workflow file is resolved from the run's immutable commit through ordinary
+directories and is limited to 256 KiB. Unrelated repository tree entries do not
+count toward Session admission. Missing, truncated or unverifiable paths,
+symlinks and submodule paths are rejected.
 
 GitHub artifact metadata attests the workflow run, not the job that issued an
 artifact. Manifest job and actor fields are checked against current GitHub run

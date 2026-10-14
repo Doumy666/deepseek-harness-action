@@ -5,6 +5,9 @@ import { basename } from "node:path";
 
 import { zipSync } from "fflate";
 import { describe, expect, it, vi } from "vitest";
+import { parseDocument } from "yaml";
+import * as core from "@actions/core";
+import { DefaultArtifactClient } from "@actions/artifact";
 
 import { PolicyDeniedError } from "../src/errors.js";
 import { GitHubQuotaError } from "../src/github/request-policy.js";
@@ -32,8 +35,17 @@ import {
   assertSessionWorkflowPolicy,
   verifySessionWorkflowRun,
 } from "../src/session/workflow-policy.js";
+import { createControllerSession } from "../src/session/controller.js";
+import { inputs } from "./helpers.js";
+
+vi.mock("@actions/core", async (original) => ({
+  ...(await original<typeof core>()),
+  warning: vi.fn(),
+}));
 
 const sha = "a".repeat(40);
+const githubTreeSha = "c".repeat(40);
+const workflowsTreeSha = "d".repeat(40);
 const hash = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 const workflow = `concurrency:\n  group: dsh-session\n  cancel-in-progress: false\njobs:\n  session:\n    name: Session worker\n    runs-on: ubuntu-latest\n    steps:\n      - uses: ./candidate-action\n        with:\n          session-mode: \${{ inputs.mode }}\n`;
 const automaticWorkflow =
@@ -134,6 +146,7 @@ function fixture() {
     sourceConclusion: "success",
     jobConclusion: "success",
     treeMode: "100644",
+    treeEntries: 1,
     currentActor: "maintainer",
     sourceActor: "maintainer",
     current: [] as Metadata[],
@@ -154,23 +167,45 @@ function fixture() {
       })),
     },
     git: {
-      getTree: vi.fn(({ tree_sha }: { tree_sha: string }) => ({
-        data: {
-          sha: tree_sha,
-          truncated: false,
-          tree: [
-            {
-              path: binding.workflow.path,
-              type: "blob",
-              mode: state.treeMode,
-              sha: "b".repeat(40),
-              size: Buffer.byteLength(state.yaml),
-            },
-          ],
-        },
-      })),
+      getTree: vi.fn(({ tree_sha }: { tree_sha: string }) => {
+        const entry =
+          tree_sha === sha
+            ? { path: ".github", type: "tree", mode: "040000", sha: githubTreeSha }
+            : tree_sha === githubTreeSha
+              ? { path: "workflows", type: "tree", mode: "040000", sha: workflowsTreeSha }
+              : tree_sha === workflowsTreeSha
+                ? {
+                    path: "session.yml",
+                    type: "blob",
+                    mode: state.treeMode,
+                    sha: "b".repeat(40),
+                    size: Buffer.byteLength(state.yaml),
+                  }
+                : undefined;
+        if (entry === undefined) throw new Error("Unexpected workflow tree fixture request");
+        return {
+          data: {
+            sha: tree_sha === sha ? "e".repeat(40) : tree_sha,
+            truncated: false,
+            tree: [
+              entry,
+              ...Array.from(
+                { length: tree_sha === sha ? state.treeEntries - 1 : 0 },
+                (_, index) => ({
+                  path: `unrelated-${String(index)}`,
+                  type: "blob",
+                  mode: "100644",
+                  sha: "f".repeat(40),
+                  size: 1,
+                }),
+              ),
+            ],
+          },
+        };
+      }),
       getBlob: vi.fn(() => ({
         data: {
+          sha: "b".repeat(40),
           encoding: "base64",
           size: Buffer.byteLength(state.yaml),
           content: Buffer.from(state.yaml).toString("base64"),
@@ -332,6 +367,122 @@ function fixture() {
 }
 
 describe("Session trusted workflow policy", () => {
+  it.each(["../docs/session.md", "../docs/zh-CN/session.md"])(
+    "documents compatible queued Session workflow semantics in %s",
+    async (path) => {
+      const contents = await readFile(new URL(path, import.meta.url), "utf8");
+      const snippet = /```yaml\r?\n([\s\S]*?)```/u.exec(contents)?.[1];
+      if (snippet === undefined) throw new Error("Missing documented Session YAML");
+      const document = parseDocument(snippet);
+      expect(document.errors).toEqual([]);
+      expect(document.getIn(["concurrency", "queue"])).toBe("max");
+      expect(document.getIn(["concurrency", "cancel-in-progress"])).toBe(false);
+      expect(document.getIn(["concurrency", "group"])).toBe(
+        "dsh-session-${{ inputs.session_key }}",
+      );
+      expect(document.get("run-name")).toBe("dsh-session-${{ inputs.session_key }}");
+      expect(document.getIn(["on", "workflow_dispatch", "inputs", "session_key", "required"])).toBe(
+        true,
+      );
+      expect(document.getIn(["on", "workflow_dispatch", "inputs", "session_key", "type"])).toBe(
+        "string",
+      );
+    },
+  );
+  it.each([undefined, "single"])(
+    "warns once about queue: max for a current workflow using %s pending slots",
+    async (queue) => {
+      const f = fixture();
+      if (queue !== undefined)
+        f.state.yaml = workflow.replace(
+          "cancel-in-progress: false",
+          `cancel-in-progress: false\n  queue: ${queue}`,
+        );
+      const onWorkflowWarning = vi.fn();
+      const prepared = await prepareSessionArtifacts({ ...f.options, onWorkflowWarning });
+      expect(onWorkflowWarning).toHaveBeenCalledExactlyOnceWith(
+        expect.stringContaining("queue: max"),
+      );
+      await saveSessionArtifact({
+        prepared,
+        checkpoint: checkpoint(200),
+        deadlineMs: f.options.deadlineMs,
+        signal: f.options.signal,
+      });
+      expect(onWorkflowWarning).toHaveBeenCalledTimes(1);
+    },
+  );
+  it("reports the current workflow warning once through repeated Controller preparation", async () => {
+    const f = fixture();
+    const warning = vi.mocked(core.warning).mockClear();
+    const upload = vi
+      .spyOn(DefaultArtifactClient.prototype, "uploadArtifact")
+      .mockImplementation(async (name, files, root) =>
+        f.uploader.uploadArtifact(name, files, root, { retentionDays: 3, compressionLevel: 0 }),
+      );
+    try {
+      const session = createControllerSession({
+        inputs: inputs({ sessionMode: "save", sessionKey: "maintainer-key" }),
+        client: f.options.client,
+        context: {
+          kind: "automation",
+          repository: { ...binding.repository, fullName: "octo/repo" },
+          runId: "200",
+          actor: "maintainer",
+        },
+        operation: "task",
+        authority: { trust: "trusted-read", allowed: true, revalidate: f.authorizeCurrent },
+        compositionId: binding.runtime.compositionId,
+        extensionDigest: binding.runtime.extensionDigest,
+        deadlineMs: f.options.deadlineMs,
+        signal: f.options.signal,
+        environment: {
+          GITHUB_WORKFLOW_REF: "octo/repo/.github/workflows/session.yml@refs/heads/main",
+          GITHUB_WORKFLOW_SHA: sha,
+          GITHUB_JOB: "session",
+          GITHUB_RUN_ATTEMPT: "1",
+        },
+      });
+      if (session === undefined) throw new Error("Expected enabled Session");
+      await Promise.all([session.prepare(), session.prepare()]);
+      await session.prepare();
+      expect(session.snapshot()).toMatchObject({ status: "claimed", generation: 1 });
+      expect(warning).toHaveBeenCalledExactlyOnceWith(expect.stringContaining("queue: max"));
+      expect(upload).toHaveBeenCalledTimes(1);
+    } finally {
+      warning.mockClear();
+      upload.mockRestore();
+    }
+  });
+  it("does not warn for a current workflow with queue: max", async () => {
+    const f = fixture();
+    f.state.yaml = workflow.replace(
+      "cancel-in-progress: false",
+      "cancel-in-progress: false\n  queue: max",
+    );
+    const onWorkflowWarning = vi.fn();
+    await expect(
+      prepareSessionArtifacts({ ...f.options, onWorkflowWarning }),
+    ).resolves.toMatchObject({
+      generation: 1,
+    });
+    expect(onWorkflowWarning).not.toHaveBeenCalled();
+  });
+  it("resumes an older workflow without queue: max and only warns for the current run", async () => {
+    const f = fixture();
+    f.state.sources.push(f.metadata(100));
+    const onWorkflowWarning = vi.fn();
+    const prepared = await prepareSessionArtifacts({
+      ...f.options,
+      mode: "resume",
+      sourceRunId: 100,
+      onWorkflowWarning,
+    });
+    expect(prepared).toMatchObject({ selection: "resumed", generation: 2, source: { runId: 100 } });
+    expect(onWorkflowWarning).toHaveBeenCalledExactlyOnceWith(
+      expect.stringContaining("queue: max"),
+    );
+  });
   it("accepts only the same maintainer key for auto run-name and concurrency", () => {
     expect(assertSessionWorkflowPolicy(automaticWorkflow, "session", binding.keyHash).jobId).toBe(
       "session",
@@ -368,6 +519,7 @@ describe("Session trusted workflow policy", () => {
       jobId: "session",
       jobName: "Session worker",
       stepIndex: 0,
+      singlePendingSlot: true,
     });
   });
   it.each([
@@ -425,9 +577,131 @@ describe("Session trusted workflow policy", () => {
     });
     expect(verified.jobRunId).toBe(1000);
     expect(f.api.git.getTree.mock.calls[0]?.[0]).toMatchObject({ tree_sha: sha });
+    expect(f.api.git.getTree.mock.calls.map(([request]) => request.tree_sha)).toEqual([
+      sha,
+      githubTreeSha,
+      workflowsTreeSha,
+    ]);
+    for (const [request] of f.api.git.getTree.mock.calls) {
+      expect(request).not.toHaveProperty("recursive");
+      expect(request).toHaveProperty("request.dshImmutable", true);
+      expect(request).toHaveProperty("request.signal", f.options.signal);
+    }
     expect(f.api.actions.listJobsForWorkflowRunAttempt.mock.calls[0]?.[0]).toMatchObject({
       attempt_number: 1,
     });
+  });
+  it.each([5000, 5001])(
+    "verifies a workflow in a repository with %s tree entries",
+    async (count) => {
+      const f = fixture();
+      f.state.treeEntries = count;
+      await expect(
+        verifySessionWorkflowRun({
+          client: f.options.client,
+          repository: binding.repository,
+          workflowPath: binding.workflow.path,
+          jobId: "session",
+          runId: 100,
+          successful: true,
+          signal: f.options.signal,
+        }),
+      ).resolves.toMatchObject({ runId: 100, sourceSha: sha, jobRunId: 1000 });
+    },
+  );
+  it.each([
+    [sha, "truncated"],
+    [githubTreeSha, "truncated"],
+    [workflowsTreeSha, "truncated"],
+    [sha, "missing"],
+    [githubTreeSha, "missing"],
+    [workflowsTreeSha, "missing"],
+    [sha, "duplicate"],
+    [githubTreeSha, "mismatched-sha"],
+    [workflowsTreeSha, "mismatched-sha"],
+    [sha, "invalid-sha"],
+    [githubTreeSha, "invalid-entry-sha"],
+    [sha, "symlink"],
+    [githubTreeSha, "symlink"],
+    [sha, "submodule"],
+    [githubTreeSha, "submodule"],
+  ])("rejects an unverifiable workflow path at %s with %s", async (treeSha, defect) => {
+    const f = fixture();
+    const getTree = f.api.git.getTree.getMockImplementation();
+    if (getTree === undefined) throw new Error("Missing GitHub tree fixture");
+    f.api.git.getTree.mockImplementation((request) => {
+      const response = getTree(request);
+      if (request.tree_sha !== treeSha) return response;
+      if (defect === "truncated") response.data.truncated = true;
+      if (defect === "missing") response.data.tree = [];
+      if (defect === "mismatched-sha") response.data.sha = "f".repeat(40);
+      if (defect === "invalid-sha") response.data.sha = "unverifiable";
+      const entry = response.data.tree[0];
+      if (entry !== undefined) {
+        if (defect === "duplicate") response.data.tree.push(entry);
+        if (defect === "invalid-entry-sha") entry.sha = "unverifiable";
+        if (defect === "symlink") Object.assign(entry, { type: "blob", mode: "120000" });
+        if (defect === "submodule") Object.assign(entry, { type: "commit", mode: "160000" });
+      }
+      return response;
+    });
+    await expect(prepareSessionArtifacts(f.options)).rejects.toThrow(PolicyDeniedError);
+    expect(f.api.git.getBlob).not.toHaveBeenCalled();
+    expect(f.uploader.uploadArtifact).not.toHaveBeenCalled();
+  });
+  it.each(["sha", "size", "encoding", "decoded-size", "utf8"])(
+    "rejects workflow blob %s mismatches before claiming",
+    async (defect) => {
+      const f = fixture();
+      const getBlob = f.api.git.getBlob.getMockImplementation();
+      if (getBlob === undefined) throw new Error("Missing GitHub blob fixture");
+      f.api.git.getBlob.mockImplementation(() => {
+        const response = getBlob();
+        if (defect === "sha") response.data.sha = "f".repeat(40);
+        if (defect === "size") response.data.size++;
+        if (defect === "encoding") response.data.encoding = "utf-8";
+        if (defect === "decoded-size")
+          response.data.content = Buffer.from("short").toString("base64");
+        if (defect === "utf8")
+          response.data.content = Buffer.alloc(response.data.size, 0xff).toString("base64");
+        return response;
+      });
+      await expect(prepareSessionArtifacts(f.options)).rejects.toThrow(PolicyDeniedError);
+      expect(f.uploader.uploadArtifact).not.toHaveBeenCalled();
+    },
+  );
+  it("retains the 256 KiB workflow bound and permits an ordinary executable workflow", async () => {
+    const f = fixture();
+    f.state.treeMode = "100755";
+    f.state.yaml += `#${" ".repeat(256 * 1024 - Buffer.byteLength(f.state.yaml) - 1)}`;
+    await expect(prepareSessionArtifacts(f.options)).resolves.toMatchObject({ generation: 1 });
+    const oversized = fixture();
+    oversized.state.yaml = f.state.yaml + " ";
+    await expect(prepareSessionArtifacts(oversized.options)).rejects.toThrow(
+      /bounded regular file/u,
+    );
+    expect(oversized.api.git.getBlob).not.toHaveBeenCalled();
+    expect(oversized.uploader.uploadArtifact).not.toHaveBeenCalled();
+  });
+  it.each(["cancel", "deadline"])("stops workflow path reads after %s", async (reason) => {
+    const f = fixture();
+    const controller = new AbortController();
+    const getTree = f.api.git.getTree.getMockImplementation();
+    if (getTree === undefined) throw new Error("Missing GitHub tree fixture");
+    f.api.git.getTree.mockImplementation((request) => {
+      controller.abort(new Error("cancelled workflow read"));
+      return getTree(request);
+    });
+    await expect(
+      prepareSessionArtifacts({
+        ...f.options,
+        signal: controller.signal,
+        ...(reason === "deadline" ? { deadlineMs: Date.now() - 1 } : {}),
+      }),
+    ).rejects.toThrow(reason === "deadline" ? /budget is exhausted/u : /cancelled workflow read/u);
+    expect(f.api.git.getTree).toHaveBeenCalledTimes(reason === "deadline" ? 0 : 1);
+    expect(f.api.git.getBlob).not.toHaveBeenCalled();
+    expect(f.uploader.uploadArtifact).not.toHaveBeenCalled();
   });
   it("rejects a different rerun initiator before claim and immutable workflow reads", async () => {
     const f = fixture();

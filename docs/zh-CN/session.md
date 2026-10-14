@@ -50,6 +50,7 @@ on:
 concurrency:
   group: dsh-session-${{ inputs.session_key }}
   cancel-in-progress: false
+  queue: max
 # 单个生产 Action step 内：
 # with:
 #   session-mode: auto
@@ -61,6 +62,11 @@ concurrency group 不区分大小写的行为一致。也支持维护者指定�
 `session-key`、group 后缀与 run-name 后缀必须是相同字面量。其他表达式、key
 表达式不匹配或启用取消均被拒绝。显式 save/resume 仍使用原字面量 group
 `dsh-session` 与 `cancel-in-progress: false`。
+
+使用 `queue: max` 保留多个等待请求。省略时，GitHub 会用新请求替换上一个等待
+请求，取消记录可能阻止当前保存与后续续接。当前 run 准备阶段遇到省略 `queue`
+或 `queue: single` 时，Action 只提示一次；旧工作流和历史检查点仍保持兼容。
+GitHub 对此队列仍有 100 个等待 run 的上限。
 
 一个静态命名 job 中只能有一个 Session-producing Action step；不支持 producer
 matrix 或 reusable job。Session 模式、key、source run 必须由
@@ -79,6 +85,10 @@ operation；automation 绑定 operation 与 Session key，所以允许修改后�
 controlled 扩展 digest 包含其有效扩展工具授权；权限变更如果移除或改变这些授权，
 恢复会因不兼容而拒绝，需要新的 key。扩展配置或凭据变更也可能改变 digest。
 每次兼容恢复仍会重新计算当前权限。
+
+工作流文件从 run 的不可变提交沿普通目录定位，文件上限为 256 KiB。仓库其他
+目录中的条目数量不再构成 Session 准入上限；缺失、截断或身份无法核验的
+路径，以及符号链接和子模块路径仍会被拒绝。
 
 GitHub artifact 元数据能证明所属 workflow run，不能独立证明由哪个 job 上传。
 manifest 中的 job/actor 字段会与当前 GitHub run/job 元数据核对，但不是服务端签发

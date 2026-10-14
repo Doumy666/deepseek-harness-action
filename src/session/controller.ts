@@ -1,4 +1,5 @@
 import { join } from "node:path";
+import * as core from "@actions/core";
 
 import { AgentDeadlineError } from "../agent/loop-errors.js";
 import type { Operation } from "../commands/parse.js";
@@ -175,6 +176,7 @@ export function createControllerSession(
         retentionDays: inputs.sessionRetentionDays,
         deadlineMs,
         signal,
+        onWorkflowWarning: (message) => core.warning(message),
         onUploadReceipt: (receipt) => {
           summary = {
             ...summary,
