@@ -232,19 +232,65 @@ describe("publishPullRequestReview", () => {
     expect(fake.issueComments[0]?.body).toContain("**Inline:** 1");
   });
 
+  it("counts unique source findings before applying the publication limit", async () => {
+    const fake = fakeClient();
+    const current = snapshot();
+    const multipleFiles = snapshot({
+      changedFiles: current.changedFiles.flatMap((file) => [
+        file,
+        { ...file, path: "src/second.ts" },
+      ]),
+    });
+    const result = await publishPullRequestReview(
+      fake.value,
+      target,
+      multipleFiles,
+      review([
+        finding({ category: "correctness", title: "Lower-ranked duplicate" }),
+        finding({ path: "src/second.ts", title: "Another source finding", confidence: 0.9 }),
+        finding({ severity: "critical", title: "Highest-ranked authorization finding" }),
+      ]),
+      2,
+    );
+
+    expect(result).toEqual({
+      selected: 2,
+      inlinePublished: 2,
+      inlineUpdated: 0,
+      duplicatesSkipped: 0,
+      summaryOnly: 0,
+      failures: [],
+    });
+    expect(fake.inlineComments.map(({ path }) => path)).toEqual([
+      "src/handler.ts",
+      "src/second.ts",
+    ]);
+    expect(fake.inlineComments[0]?.body).toContain("Highest-ranked authorization finding");
+    expect(fake.inlineComments[0]?.body).not.toContain("Lower-ranked duplicate");
+    expect(fake.issueComments[0]?.body).toContain("**High-confidence findings:** 2");
+  });
+
   it("skips an identical rerun and updates changed prose at the same fingerprint/location", async () => {
     const fake = fakeClient();
     const first = finding();
-    await publishPullRequestReview(fake.value, target, snapshot(), review([first]), 20);
+    const alternate = finding({ category: "correctness", side: undefined, confidence: 0.9 });
+    const initial = await publishPullRequestReview(
+      fake.value,
+      target,
+      snapshot(),
+      review([alternate, first]),
+      20,
+    );
+    expect(initial).toMatchObject({ selected: 1, inlinePublished: 1 });
 
     const duplicate = await publishPullRequestReview(
       fake.value,
       target,
       snapshot(),
-      review([first], "Second run"),
+      review([first, alternate], "Second run"),
       20,
     );
-    expect(duplicate).toMatchObject({ duplicatesSkipped: 1, inlinePublished: 0 });
+    expect(duplicate).toMatchObject({ selected: 1, duplicatesSkipped: 1, inlinePublished: 0 });
 
     const rewritten = finding({
       category: "correctness",
@@ -252,15 +298,16 @@ describe("publishPullRequestReview", () => {
       body: "The write happens before authorization, allowing an unauthorized mutation.",
       evidence: "The mutation call is reached before the user guard.",
       suggestion: "Authorize the caller first, then perform the write.",
+      confidence: 0.99,
     });
     const updated = await publishPullRequestReview(
       fake.value,
       target,
       snapshot(),
-      review([rewritten], "Third run"),
+      review([first, rewritten], "Third run"),
       20,
     );
-    expect(updated).toMatchObject({ inlineUpdated: 1, inlinePublished: 0 });
+    expect(updated).toMatchObject({ selected: 1, inlineUpdated: 1, inlinePublished: 0 });
     expect(fake.createReviewComment).toHaveBeenCalledOnce();
     expect(fake.updateReviewComment).toHaveBeenCalledOnce();
     expect(fake.inlineComments).toHaveLength(1);
@@ -268,6 +315,54 @@ describe("publishPullRequestReview", () => {
     expect(fake.createComment).toHaveBeenCalledOnce();
     expect(fake.updateComment).toHaveBeenCalledTimes(2);
   });
+
+  it("excludes low-confidence, low-severity, unsupported and unevidenced findings before selection", async () => {
+    const fake = fakeClient();
+    const result = await publishPullRequestReview(
+      fake.value,
+      target,
+      snapshot(),
+      review([
+        finding({ confidence: 0.79, severity: "critical" }),
+        finding({ severity: "low", confidence: 1 }),
+        finding({ category: "maintainability", severity: "critical", confidence: 1 }),
+        finding({ evidence: undefined, severity: "critical", confidence: 1 }),
+        finding({ title: "Supported source finding", confidence: 0.8 }),
+      ]),
+      1,
+    );
+
+    expect(result).toMatchObject({ selected: 1, inlinePublished: 1 });
+    expect(fake.inlineComments).toHaveLength(1);
+    expect(fake.inlineComments[0]?.body).toContain("Supported source finding");
+  });
+
+  it("keeps an empty selection when the unique publication limit is zero", async () => {
+    const fake = fakeClient();
+    const result = await publishPullRequestReview(
+      fake.value,
+      target,
+      snapshot(),
+      review([finding()]),
+      0,
+    );
+
+    expect(result).toMatchObject({ selected: 0, inlinePublished: 0, summaryOnly: 0 });
+    expect(fake.inlineComments).toHaveLength(0);
+    expect(fake.issueComments[0]?.body).toContain("**High-confidence findings:** 0");
+  });
+
+  it.each([-1, 1.5, 101, Number.NaN])(
+    "rejects an invalid publication limit %s before GitHub effects",
+    async (maximum) => {
+      const fake = fakeClient();
+      await expect(
+        publishPullRequestReview(fake.value, target, snapshot(), review([finding()]), maximum),
+      ).rejects.toThrow(RangeError);
+      expect(fake.inlineComments).toHaveLength(0);
+      expect(fake.issueComments).toHaveLength(0);
+    },
+  );
 
   it("does not create another inline when synchronize moves the same source anchor", async () => {
     const fake = fakeClient();
