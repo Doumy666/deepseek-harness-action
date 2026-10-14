@@ -1,11 +1,9 @@
-import type { DshRuntime } from "../dsh/runner.js";
+import type { DshRunResult, DshRuntime } from "../dsh/runner.js";
 import { throwIfCancelled } from "../lifecycle/cancellation.js";
 import { PHASE_TIMEOUTS, phaseTimeoutMs, settleWithin } from "../lifecycle/deadline.js";
 import { AgentDeadlineError } from "./loop-errors.js";
 import type { AgentLoopHooks } from "./loop-contracts.js";
-import type { AgentEngine, AgentTurnRequest, AgentTurnResponse } from "./contracts.js";
-import type { DshOutput } from "../dsh/schema.js";
-import type { DshTurnMetadata } from "../dsh/engine.js";
+import type { AgentEngine, AgentTurnRequest } from "./contracts.js";
 
 export async function createRuntimeWithinDeadline(
   createRuntime: () => Promise<DshRuntime>,
@@ -46,10 +44,10 @@ export async function runLifecycleHookWithinDeadline(
 
 /** The Controller owns the deadline even when an engine does not settle on abort. */
 export async function runEngineTurnWithinDeadline(
-  engine: AgentEngine<DshOutput, DshTurnMetadata>,
+  engine: AgentEngine<DshRunResult>,
   request: AgentTurnRequest,
   now: () => number = Date.now,
-): Promise<AgentTurnResponse<DshOutput, DshTurnMetadata>> {
+): Promise<DshRunResult> {
   throwIfCancelled(request.signal);
   const remainingMs = request.deadlineMs - now();
   if (!Number.isSafeInteger(remainingMs) || remainingMs <= 0) throw new AgentDeadlineError();

@@ -4,8 +4,6 @@ import type { EffectiveTools } from "../tools/registry.js";
 import type { AgentEngine, ToolProvider } from "./contracts.js";
 import type { DshRunResult, DshRuntime } from "../dsh/runner.js";
 import type { DshFailureTelemetry } from "../dsh/errors.js";
-import type { DshOutput } from "../dsh/schema.js";
-import type { DshTurnMetadata } from "../dsh/engine.js";
 import type { ValidationFailureError } from "../write/validate.js";
 
 export interface AgentTask {
@@ -81,6 +79,6 @@ export interface AgentLoopDependencies {
   readonly disposeRuntime?: (runtime: DshRuntime) => Promise<void>;
   readonly createEngine?: (
     runtime: DshRuntime,
-  ) => AgentEngine<DshOutput, DshTurnMetadata> | Promise<AgentEngine<DshOutput, DshTurnMetadata>>;
+  ) => AgentEngine<DshRunResult> | Promise<AgentEngine<DshRunResult>>;
   readonly workspaceFingerprint?: (root: string) => Promise<string>;
 }
