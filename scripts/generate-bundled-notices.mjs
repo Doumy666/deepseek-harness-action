@@ -10,7 +10,10 @@ if (arguments_.some((argument) => argument !== "--check") || arguments_.length >
 }
 const check = arguments_.includes("--check");
 function normalizeText(value) {
-  return value.replace(/\r\n?/gu, "\n").trim();
+  return value
+    .replace(/\r\n?/gu, "\n")
+    .replace(/[\t ]+$/gmu, "")
+    .trim();
 }
 
 async function optionalText(path) {

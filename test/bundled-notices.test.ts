@@ -94,6 +94,19 @@ function run(root: string, ...args: string[]) {
 }
 
 describe("bundled dependency notice CLI", () => {
+  it("normalizes published line endings and trailing whitespace for the repository formatter", async () => {
+    const root = await fixture({ licenseFile: true });
+    await write(
+      root,
+      "node_modules/example/LICENSE",
+      "First license line   \r\n \r\nSecond line\t\r\n",
+    );
+    expect(run(root).status).toBe(0);
+    expect(await readFile(join(root, "BUNDLED_DEPENDENCIES.md"), "utf8")).toContain(
+      "\nFirst license line\n\nSecond line\n",
+    );
+  });
+
   it("checks drift without rewriting and accepts its deterministic generated output", async () => {
     const root = await fixture({ licenseFile: true });
     await write(root, "BUNDLED_DEPENDENCIES.md", "old reviewed notices\n");
