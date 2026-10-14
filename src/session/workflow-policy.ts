@@ -11,6 +11,7 @@ import {
 } from "./contracts.js";
 
 const MAX_WORKFLOW_BYTES = 256 * 1024;
+const OBJECT_SHA = /^[a-f0-9]{40}$/u;
 
 function object(value: unknown): Record<string, unknown> {
   if (!isRecord(value)) {
@@ -23,6 +24,7 @@ export interface SessionWorkflowPolicy {
   readonly jobId: string;
   readonly jobName: string;
   readonly stepIndex: number;
+  readonly singlePendingSlot: boolean;
 }
 
 /** Whole immutable maintainer-selected workflow is the trust boundary, not artifact job attestation. */
@@ -119,7 +121,12 @@ export function assertSessionWorkflowPolicy(
   ) {
     throw new PolicyDeniedError("Session producer job name must be a static literal");
   }
-  return { jobId: producer.jobId, jobName, stepIndex: producer.stepIndex };
+  return {
+    jobId: producer.jobId,
+    jobName,
+    stepIndex: producer.stepIndex,
+    singlePendingSlot: concurrency.queue === undefined || concurrency.queue === "single",
+  };
 }
 
 export interface VerifiedSessionWorkflowRun extends SessionRunIdentity {
@@ -128,6 +135,7 @@ export interface VerifiedSessionWorkflowRun extends SessionRunIdentity {
   readonly updatedAt: string;
   readonly sessionTitle?: string;
   readonly runCreatedAt: string;
+  readonly singlePendingSlot: boolean;
 }
 
 export interface VerifySessionWorkflowRunOptions {
@@ -142,6 +150,83 @@ export interface VerifySessionWorkflowRunOptions {
   readonly successful: boolean;
   readonly automaticKeyHash?: string;
   readonly signal: AbortSignal;
+}
+
+/** Follow only the immutable workflow path; unrelated repository entries are not Session state. */
+async function readWorkflowSource(
+  options: VerifySessionWorkflowRunOptions,
+  sourceSha: string,
+): Promise<string> {
+  const { client, repository, signal, workflowPath } = options;
+  if (!/^\.github\/workflows\/[A-Za-z0-9][A-Za-z0-9._-]*\.ya?ml$/u.test(workflowPath))
+    throw new PolicyDeniedError("Session workflow path must identify one workflow file");
+  const parameters = {
+    owner: repository.owner,
+    repo: repository.repo,
+    request: { signal, dshImmutable: true },
+  };
+  const components = workflowPath.split("/");
+  let treeSha = sourceSha;
+  for (const [index, component] of components.entries()) {
+    signal.throwIfAborted();
+    const tree = await client.rest.git.getTree({ ...parameters, tree_sha: treeSha });
+    signal.throwIfAborted();
+    // GitHub resolves the initial commit SHA to its root tree. Subsequent
+    // requests are exact tree SHAs supplied by the preceding parent entry.
+    if (
+      typeof tree.data.truncated !== "boolean" ||
+      tree.data.truncated ||
+      !OBJECT_SHA.test(tree.data.sha) ||
+      (index > 0 && tree.data.sha !== treeSha) ||
+      !Array.isArray(tree.data.tree)
+    )
+      throw new PolicyDeniedError(
+        "Session workflow tree identity or complete listing cannot be verified",
+      );
+    const matches = tree.data.tree.filter((entry) => entry.path === component);
+    const entry = matches[0];
+    if (matches.length !== 1 || entry?.sha === undefined || !OBJECT_SHA.test(entry.sha))
+      throw new PolicyDeniedError(
+        "Session workflow path is missing or has ambiguous object identity",
+      );
+    if (index < components.length - 1) {
+      if (entry.type !== "tree" || entry.mode !== "040000")
+        throw new PolicyDeniedError("Session workflow directories must be ordinary Git trees");
+      treeSha = entry.sha;
+      continue;
+    }
+    if (
+      entry.type !== "blob" ||
+      !["100644", "100755"].includes(entry.mode) ||
+      !Number.isSafeInteger(entry.size) ||
+      (entry.size ?? -1) < 0 ||
+      (entry.size ?? MAX_WORKFLOW_BYTES + 1) > MAX_WORKFLOW_BYTES
+    )
+      throw new PolicyDeniedError(
+        "Session workflow must be a bounded regular file in its immutable Git tree",
+      );
+    const blob = await client.rest.git.getBlob({ ...parameters, file_sha: entry.sha });
+    signal.throwIfAborted();
+    if (
+      blob.data.sha !== entry.sha ||
+      blob.data.encoding !== "base64" ||
+      blob.data.size !== entry.size ||
+      typeof blob.data.content !== "string" ||
+      blob.data.content.length > MAX_WORKFLOW_BYTES * 2
+    )
+      throw new PolicyDeniedError(
+        "Session workflow blob identity, size or encoding cannot be verified",
+      );
+    const bytes = Buffer.from(blob.data.content, "base64");
+    if (bytes.length !== blob.data.size || bytes.length > MAX_WORKFLOW_BYTES)
+      throw new PolicyDeniedError("Session workflow blob size does not match");
+    try {
+      return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    } catch {
+      throw new PolicyDeniedError("Session workflow must contain valid UTF-8");
+    }
+  }
+  throw new PolicyDeniedError("Session workflow file could not be verified");
 }
 
 export async function verifySessionWorkflowRun(
@@ -203,48 +288,7 @@ export async function verifySessionWorkflowRun(
       "Session current run initiator differs from the actor whose authority was evaluated; use a new maintainer workflow dispatch",
     );
 
-  const tree = await client.rest.git.getTree({
-    ...parameters,
-    tree_sha: run.head_sha,
-    recursive: "1",
-    request: { signal, dshImmutable: true },
-  });
-  if (tree.data.truncated || tree.data.tree.length > 5000)
-    throw new PolicyDeniedError(
-      "Session workflow tree cannot be completely verified within its bound",
-    );
-  const entry = tree.data.tree.find((item) => item.path === options.workflowPath);
-  if (
-    entry?.type !== "blob" ||
-    !["100644", "100755"].includes(entry.mode) ||
-    (entry.size ?? MAX_WORKFLOW_BYTES + 1) > MAX_WORKFLOW_BYTES
-  )
-    throw new PolicyDeniedError(
-      "Session workflow must be a bounded regular file in its immutable Git tree",
-    );
-  const blob = await client.rest.git.getBlob({
-    ...parameters,
-    file_sha: entry.sha,
-    request: { signal, dshImmutable: true },
-  });
-  if (
-    blob.data.encoding !== "base64" ||
-    blob.data.size === null ||
-    blob.data.size > MAX_WORKFLOW_BYTES ||
-    blob.data.content.length > MAX_WORKFLOW_BYTES * 2
-  )
-    throw new PolicyDeniedError(
-      "Session workflow blob exceeds its bound or has unsupported encoding",
-    );
-  const bytes = Buffer.from(blob.data.content, "base64");
-  if (bytes.length !== blob.data.size || bytes.length > MAX_WORKFLOW_BYTES)
-    throw new PolicyDeniedError("Session workflow blob size does not match");
-  let source: string;
-  try {
-    source = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-  } catch {
-    throw new PolicyDeniedError("Session workflow must contain valid UTF-8");
-  }
+  const source = await readWorkflowSource(options, run.head_sha);
   const policy = assertSessionWorkflowPolicy(source, options.jobId, options.automaticKeyHash);
   let sessionTitle: string | undefined;
   if (options.automaticKeyHash !== undefined) {
@@ -287,6 +331,7 @@ export async function verifySessionWorkflowRun(
     createdAt: job.started_at,
     updatedAt: job.completed_at ?? run.updated_at,
     runCreatedAt: run.created_at,
+    singlePendingSlot: policy.singlePendingSlot,
     ...(sessionTitle === undefined ? {} : { sessionTitle }),
   };
 }
