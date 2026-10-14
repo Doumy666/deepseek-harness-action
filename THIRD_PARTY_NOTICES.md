@@ -31,6 +31,14 @@ The exact dependency graph, upstream contract changes, and residual dependency
 advisory are documented in
 [`docs/dsh-0.1.7-rc.2-migration.md`](docs/dsh-0.1.7-rc.2-migration.md).
 
+Regenerate the static notices with `npm run generate:bundled-notices` after a
+normal build. The complete check verifies the result without rewriting it.
+Package license files and complete README grants are preferred. The reviewed
+offline supplements in `assets/licenses/supplemental-notices.json` bind each
+exception to its exact package version, lockfile integrity, source and text
+checksum. A declaration-only package is identified as such; no missing grant
+or copyright text is invented. Unused supplements must be removed.
+
 ## Claude Code Action
 
 MIT License

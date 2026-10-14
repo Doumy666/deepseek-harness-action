@@ -4,11 +4,11 @@ import { AGENT_PROTOCOL_VERSION, type AgentEngine } from "./contracts.js";
 import { createDshRuntime, disposeDshRuntime, type DshRunResult } from "../dsh/runner.js";
 import { withDshRuntimeActivity } from "../dsh/runtime.js";
 import { DshError, DshMalformedOutputError } from "../dsh/errors.js";
-import { parseDshOutput, type DshOutput } from "../dsh/schema.js";
+import { parseDshOutput } from "../dsh/schema.js";
 import type { ActionInputs } from "../inputs.js";
 import { throwIfCancelled } from "../lifecycle/cancellation.js";
 import { PHASE_TIMEOUTS, phaseTimeoutMs } from "../lifecycle/deadline.js";
-import { DshAgentEngine, type DshTurnMetadata } from "../dsh/engine.js";
+import { DshAgentEngine } from "../dsh/engine.js";
 import { ValidationFailureError } from "../write/validate.js";
 import { fingerprintWorkspace } from "../write/workspace.js";
 import { AgentDeadlineError, AgentLoopLimitError, AgentNoProgressError } from "./loop-errors.js";
@@ -59,7 +59,7 @@ export async function runAgentLoop<TFinal>(
   const workspaceFingerprint = dependencies.workspaceFingerprint ?? fingerprintWorkspace;
   const redact = hooks.redact ?? ((value: string) => value);
   const runtime = await createRuntimeWithinDeadline(createRuntime, disposeRuntime, hooks, now);
-  let engine: AgentEngine<DshOutput, DshTurnMetadata> | undefined;
+  let engine: AgentEngine<DshRunResult> | undefined;
   const feedback: LoopFeedback[] = [];
   const telemetry = new LoopTelemetry();
   const taskScopeFingerprint = feedbackFingerprint({
@@ -139,22 +139,8 @@ export async function runAgentLoop<TFinal>(
         task.operation === "task" ? inputs.taskOutputSchema : undefined,
       );
       const result: DshRunResult = {
+        ...response,
         output: validatedOutput,
-        durationMs: response.durationMs,
-        isolationReport: response.metadata.isolationReport,
-        ...(response.metadata.usage === undefined ? {} : { usage: response.metadata.usage }),
-        ...(response.metadata.rawStdout === undefined
-          ? {}
-          : { rawStdout: response.metadata.rawStdout }),
-        ...(response.metadata.extensionAudit === undefined
-          ? {}
-          : { extensionAudit: response.metadata.extensionAudit }),
-        ...(response.metadata.toolReceipts === undefined
-          ? {}
-          : { toolReceipts: response.metadata.toolReceipts }),
-        ...(response.metadata.observedTools === undefined
-          ? {}
-          : { observedTools: response.metadata.observedTools }),
       };
       const aggregate = telemetry.observe(result);
       await hooks.onState?.(aggregate, stats(turn));

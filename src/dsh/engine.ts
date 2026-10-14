@@ -1,24 +1,13 @@
-import type { ModelUsage } from "./usage.js";
 import type { ActionInputs } from "../inputs.js";
-import { runDsh, type DshIsolationReport, type DshRuntime, type DshToolReceipt } from "./runner.js";
-import type { DshOutput } from "./schema.js";
+import { runDsh, type DshRunResult, type DshRuntime } from "./runner.js";
 import type { SecurityPolicy } from "../security/policy.js";
 import { removeMarkdownImages } from "../security/redaction.js";
 import type { AgentEngine, AgentToolManifest, AgentTurnRequest } from "../agent/contracts.js";
-import type { AnyExtensionAudit, ExtensionPlan } from "../extensions/plan.js";
+import type { ExtensionPlan } from "../extensions/plan.js";
 import { nativeToolSchema, type NativeToolId } from "../tools/schema.js";
 import type { DshComposition } from "./composition.js";
 import { selectDshComposition } from "./select-composition.js";
 import { DshAbortedError, DshConfigurationError } from "./errors.js";
-
-export interface DshTurnMetadata {
-  readonly usage?: ModelUsage;
-  readonly isolationReport: DshIsolationReport;
-  readonly rawStdout?: string;
-  readonly extensionAudit?: AnyExtensionAudit;
-  readonly toolReceipts?: readonly DshToolReceipt[];
-  readonly observedTools?: readonly string[];
-}
 
 export function partitionDshToolPlanes(tools: readonly AgentToolManifest[]): {
   readonly nativeTools: readonly NativeToolId[];
@@ -44,8 +33,8 @@ export function partitionDshToolPlanes(tools: readonly AgentToolManifest[]): {
   return { nativeTools, controllerTools, extensionTools };
 }
 
-/** Current engine adapter; the outer loop depends only on the provider-neutral contract. */
-export class DshAgentEngine implements AgentEngine<DshOutput, DshTurnMetadata> {
+/** Own DSH turn execution and shutdown while retaining the complete worker result. */
+export class DshAgentEngine implements AgentEngine<DshRunResult> {
   public readonly id = "dsh";
   public readonly version: string;
   private readonly composition: DshComposition;
@@ -112,7 +101,7 @@ export class DshAgentEngine implements AgentEngine<DshOutput, DshTurnMetadata> {
     } else if (actualExtensionIds.length > 0) {
       throw new Error("Native DSH extensions must not be represented as Controller manifests");
     }
-    const result = await runDsh(
+    return await runDsh(
       {
         operation: request.operation,
         prompt: JSON.stringify(request.context, (_key, value: unknown) =>
@@ -145,17 +134,5 @@ export class DshAgentEngine implements AgentEngine<DshOutput, DshTurnMetadata> {
         ...(this.runtime === undefined ? {} : { runtime: this.runtime }),
       },
     );
-    return {
-      output: result.output,
-      durationMs: result.durationMs,
-      metadata: {
-        isolationReport: result.isolationReport,
-        ...(result.usage === undefined ? {} : { usage: result.usage }),
-        ...(result.rawStdout === undefined ? {} : { rawStdout: result.rawStdout }),
-        ...(result.extensionAudit === undefined ? {} : { extensionAudit: result.extensionAudit }),
-        ...(result.toolReceipts === undefined ? {} : { toolReceipts: result.toolReceipts }),
-        ...(result.observedTools === undefined ? {} : { observedTools: result.observedTools }),
-      },
-    };
   }
 }

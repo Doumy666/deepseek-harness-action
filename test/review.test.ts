@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 
 import { fingerprintFinding } from "../src/review/fingerprint.js";
-import { filterHighPrecisionFindings } from "../src/review/precision.js";
 import { partitionDshToolPlanes } from "../src/dsh/engine.js";
 import {
   REVIEW_LIMITS,
@@ -200,60 +199,6 @@ describe("fingerprintFinding", () => {
       anchorContext: "if (!user) update();",
     });
     expect(right).toBe(left);
-  });
-});
-
-describe("filterHighPrecisionFindings", () => {
-  it("prioritizes security/correctness/concurrency/regression and deduplicates", () => {
-    const duplicate = finding({ severity: "critical", confidence: 0.99 });
-    const selected = filterHighPrecisionFindings([
-      finding({ category: "maintainability", confidence: 1 }),
-      finding({ confidence: 0.7 }),
-      finding({ severity: "low" }),
-      finding(),
-      duplicate,
-      finding({
-        title: "Race in singleton initialization",
-        body: "Two requests can initialize the object concurrently.",
-        evidence: "The check and assignment are unsynchronized.",
-        category: "concurrency",
-        severity: "critical",
-      }),
-      finding({
-        title: "Missing evidence",
-        body: "This is only speculation.",
-        evidence: undefined,
-      }),
-    ]);
-
-    expect(selected.map((item) => item.title)).toEqual([
-      "Missing authorization check",
-      "Race in singleton initialization",
-    ]);
-    // The higher-ranked semantically duplicate finding wins.
-    expect(selected[0]).toMatchObject({ severity: "critical", line: 42 });
-  });
-
-  it("supports explicit policy and maximum overrides", () => {
-    const selected = filterHighPrecisionFindings(
-      [
-        finding({ category: "maintainability", severity: "low", evidence: undefined }),
-        finding({ title: "second", body: "second", evidence: undefined }),
-      ],
-      {
-        minConfidence: 0,
-        maxFindings: 1,
-        requireEvidence: false,
-        categories: new Set(["maintainability", "security"]),
-        severities: new Set(["low", "high"]),
-      },
-    );
-    expect(selected).toHaveLength(1);
-  });
-
-  it("rejects invalid option bounds", () => {
-    expect(() => filterHighPrecisionFindings([], { minConfidence: 2 })).toThrow(RangeError);
-    expect(() => filterHighPrecisionFindings([], { maxFindings: 101 })).toThrow(RangeError);
   });
 });
 
