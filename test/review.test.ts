@@ -153,6 +153,15 @@ describe("reviewResultSchema", () => {
 
 describe("fingerprintFinding", () => {
   it.each([undefined, "same source context"])(
+    "keeps literal backslashes distinct from directory separators with anchor %s",
+    (anchorContext) => {
+      expect(fingerprintFinding({ ...finding({ path: "src\\file.ts" }), anchorContext })).not.toBe(
+        fingerprintFinding({ ...finding({ path: "src/file.ts" }), anchorContext }),
+      );
+    },
+  );
+
+  it.each([undefined, "same source context"])(
     "keeps NFC and NFD file identities distinct with anchor %s",
     (anchorContext) => {
       expect(fingerprintFinding({ ...finding({ path: "caf\u00e9.ts" }), anchorContext })).not.toBe(

@@ -29,9 +29,14 @@ function isSafeRepositoryPath(path: string): boolean {
 }
 
 function findFile(diff: ParsedDiff, location: FindingLocation): DiffFile | undefined {
-  const normalized = normalizePath(location.path);
-  const matches = (path: string | null): boolean =>
-    path !== null && normalizePath(path) === normalized;
+  // Backslashes may be literal Git filename bytes. Resolve the exact identity
+  // before trying a Windows-style model alias; never rewrite paths from Git.
+  const exact = location.path.replace(/^\.\//u, "");
+  const hasExactIdentity = diff.files.some(
+    (file) => file.newPath === exact || file.oldPath === exact,
+  );
+  const normalized = hasExactIdentity ? exact : normalizePath(location.path);
+  const matches = (path: string | null): boolean => path !== null && path === normalized;
   let candidates: DiffFile[];
   if (location.side === "RIGHT") {
     // A current path owns RIGHT coordinates even if another file used that name

@@ -264,6 +264,100 @@ diff --git a/injected.ts b/injected.ts
 });
 
 describe("review file path identity", () => {
+  it.each([false, true])(
+    "keeps literal backslashes distinct from directory separators with reversed order=%s",
+    (reverse) => {
+      const paths = ["src\\file.ts", "src/file.ts"];
+      const files = paths.map((filename) => ({
+        filename,
+        status: "modified",
+        patch: "@@ -1 +1 @@\n-oldCall();\n+newCall();",
+      }));
+      const diff = parseGitHubFilePatches(reverse ? files.reverse() : files);
+      for (const path of paths) {
+        for (const side of ["LEFT", "RIGHT", undefined] as const) {
+          expect(mapFindingToInline(diff, { path, line: 1, side })).toEqual({
+            path,
+            line: 1,
+            side: side ?? "RIGHT",
+          });
+        }
+      }
+    },
+  );
+
+  it("does not reinterpret a directory path as a literal backslash filename", () => {
+    const diff = parseGitHubFilePatches([
+      { filename: "src\\file.ts", status: "added", patch: "@@ -0,0 +1 @@\n+newCall();" },
+    ]);
+    expect(mapFindingToInline(diff, { path: "src/file.ts", line: 1 })).toBeNull();
+  });
+
+  it("retains an unambiguous Windows-style model path for a directory path", () => {
+    const diff = parseGitHubFilePatches([
+      { filename: "src/file.ts", status: "modified", patch: "@@ -1 +1 @@\n-old();\n+new();" },
+    ]);
+    for (const side of ["LEFT", "RIGHT", undefined] as const) {
+      expect(mapFindingToInline(diff, { path: ".\\src\\file.ts", line: 1, side })).toEqual({
+        path: "src/file.ts",
+        line: 1,
+        side: side ?? "RIGHT",
+      });
+    }
+  });
+
+  it.each([{ patch: null }, { binary: true }, { truncated: true }])(
+    "does not fall back from an unusable exact backslash path: %j",
+    (overrides) => {
+      const file = {
+        filename: "src/file.ts",
+        status: "modified",
+        patch: "@@ -1 +1 @@\n-old();\n+new();",
+      };
+      const diff = parseGitHubFilePatches([
+        file,
+        { ...file, filename: "src\\file.ts", ...overrides },
+      ]);
+      expect(mapFindingToInline(diff, { path: "src\\file.ts", line: 1, side: "RIGHT" })).toBeNull();
+    },
+  );
+
+  it.each(["LEFT", "RIGHT"] as const)(
+    "does not replace an exact identity missing %s coordinates with a Windows alias",
+    (side) => {
+      const diff = parseGitHubFilePatches([
+        { filename: "src/file.ts", status: "modified", patch: "@@ -1 +1 @@\n-old();\n+new();" },
+        {
+          filename: "src\\file.ts",
+          status: side === "LEFT" ? "added" : "deleted",
+          patch: side === "LEFT" ? "@@ -0,0 +1 @@\n+new();" : "@@ -1 +0,0 @@\n-old();",
+        },
+      ]);
+      expect(mapFindingToInline(diff, { path: "src\\file.ts", line: 1, side })).toBeNull();
+    },
+  );
+
+  it.each(["LEFT", "RIGHT"] as const)(
+    "retains Windows-style old and current rename aliases on %s",
+    (side) => {
+      const diff = parseGitHubFilePatches([
+        {
+          filename: "src/new.ts",
+          previousFilename: "src/old.ts",
+          status: "renamed",
+          patch: "@@ -1 +1 @@\n-old();\n+new();",
+        },
+      ]);
+      for (const path of ["src\\old.ts", "src\\new.ts"]) {
+        expect(mapFindingToInline(diff, { path, line: 1, side })).toEqual({
+          path: "src/new.ts",
+          line: 1,
+          side,
+        });
+      }
+    },
+  );
+
   const renamed = {
     filename: "a-moved.ts",
     previousFilename: "z-original.ts",

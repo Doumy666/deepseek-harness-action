@@ -197,6 +197,63 @@ const target = {
 } as const;
 
 describe("publishPullRequestReview", () => {
+  it.each([false, true])(
+    "publishes distinct backslash paths with identical source anchors and reversed order=%s",
+    async (reverse) => {
+      const paths = ["src\\file.ts", "src/file.ts"];
+      const original = snapshot().changedFiles[0];
+      if (original === undefined) throw new Error("missing source fixture");
+      const files = paths.map((path) => ({ ...original, path }));
+      const current = snapshot({ changedFiles: reverse ? files.reverse() : files });
+      const fake = fakeClient();
+      const output = review(paths.map((path) => finding({ path })));
+      const result = await publishPullRequestReview(fake.value, target, current, output, 20);
+      expect(result).toMatchObject({ selected: 2, inlinePublished: 2, summaryOnly: 0 });
+      expect(fake.inlineComments.map((comment) => comment.path).sort()).toEqual(paths.sort());
+      expect(new Set(fake.inlineComments.map((comment) => comment.body)).size).toBe(2);
+      const rerun = await publishPullRequestReview(fake.value, target, current, output, 20);
+      expect(rerun).toMatchObject({ selected: 2, duplicatesSkipped: 2, inlinePublished: 0 });
+    },
+  );
+
+  it("keeps unmappable backslash and directory findings separate in the summary", async () => {
+    const original = snapshot().changedFiles[0];
+    if (original === undefined) throw new Error("missing source fixture");
+    const paths = ["src\\file.ts", "src/file.ts"];
+    const fake = fakeClient();
+    const result = await publishPullRequestReview(
+      fake.value,
+      target,
+      snapshot({ changedFiles: paths.map((path) => ({ ...original, path, patchMissing: true })) }),
+      review(paths.map((path) => finding({ path }))),
+      20,
+    );
+    expect(result).toMatchObject({ selected: 2, inlinePublished: 0, summaryOnly: 2 });
+    expect(fake.createReviewComment).not.toHaveBeenCalled();
+    expect(fake.issueComments[0]?.body).toContain("Findings carried in the summary");
+    expect(fake.issueComments[0]?.body).toContain("src/file.ts:2");
+  });
+
+  it("deduplicates a Windows-style model alias with its resolved Git path", async () => {
+    const fake = fakeClient();
+    const first = await publishPullRequestReview(
+      fake.value,
+      target,
+      snapshot(),
+      review([finding({ path: "src\\handler.ts" })]),
+      20,
+    );
+    expect(first).toMatchObject({ inlinePublished: 1, summaryOnly: 0 });
+    const second = await publishPullRequestReview(
+      fake.value,
+      target,
+      snapshot(),
+      review([finding()]),
+      20,
+    );
+    expect(second).toMatchObject({ duplicatesSkipped: 1, inlinePublished: 0 });
+  });
+
   it("does not let a legacy fingerprint on another Unicode path suppress a current finding", async () => {
     const original = snapshot().changedFiles[0];
     if (original === undefined) throw new Error("missing fixture file");
