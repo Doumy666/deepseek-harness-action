@@ -19,11 +19,11 @@ export interface FingerprintableFinding extends Pick<
 }
 
 function normalizePath(path: string): string {
-  return path.replaceAll("\\", "/").replace(/^\.\//u, "").normalize("NFC");
+  return path.replaceAll("\\", "/").replace(/^\.\//u, "");
 }
 
 function normalizeAnchor(value: string): string {
-  return value.normalize("NFC").replace(/\r\n?/gu, "\n").trim();
+  return value.replace(/\r\n?/gu, "\n").trim();
 }
 
 /**

@@ -263,6 +263,133 @@ diff --git a/injected.ts b/injected.ts
   });
 });
 
+describe("review file path identity", () => {
+  const renamed = {
+    filename: "a-moved.ts",
+    previousFilename: "z-original.ts",
+    status: "renamed",
+    patch: "@@ -1,2 +1,2 @@\n const moved = true;\n-oldCall();\n+movedCall();",
+  };
+  const recreated = {
+    filename: "z-original.ts",
+    status: "added",
+    patch: "@@ -0,0 +1,2 @@\n+const replacement = true;\n+newCall();",
+  };
+
+  it.each([false, true])("prefers the current RIGHT path with reversed order=%s", (reverse) => {
+    const files = [renamed, recreated];
+    const diff = parseGitHubFilePatches(reverse ? files.reverse() : files);
+    expect(mapFindingToInline(diff, { path: "z-original.ts", line: 2, side: "RIGHT" })).toEqual({
+      path: "z-original.ts",
+      line: 2,
+      side: "RIGHT",
+    });
+  });
+
+  it.each([false, true])("keeps the unique old LEFT path with reversed order=%s", (reverse) => {
+    const files = [renamed, recreated];
+    const diff = parseGitHubFilePatches(reverse ? files.reverse() : files);
+    expect(mapFindingToInline(diff, { path: "z-original.ts", line: 2, side: "LEFT" })).toEqual({
+      path: "a-moved.ts",
+      line: 2,
+      side: "LEFT",
+    });
+  });
+
+  it.each([false, true])(
+    "rejects an unspecified side on a reused path with reversed order=%s",
+    (reverse) => {
+      const files = [renamed, recreated];
+      expect(
+        mapFindingToInline(parseGitHubFilePatches(reverse ? files.reverse() : files), {
+          path: "z-original.ts",
+          line: 2,
+        }),
+      ).toBeNull();
+    },
+  );
+
+  it.each(["LEFT", "RIGHT"] as const)(
+    "preserves normal rename aliases and ranges on %s",
+    (side) => {
+      const diff = parseGitHubFilePatches([renamed]);
+      for (const path of ["z-original.ts", "a-moved.ts"]) {
+        expect(mapFindingToInline(diff, { path, startLine: 1, line: 2, side })).toEqual({
+          path: "a-moved.ts",
+          startLine: 1,
+          startSide: side,
+          line: 2,
+          side,
+        });
+      }
+    },
+  );
+
+  it.each(["LEFT", "RIGHT", undefined] as const)(
+    "rejects duplicate canonical paths on side %s",
+    (side) => {
+      const diff = parseGitHubFilePatches([
+        renamed,
+        { ...renamed, previousFilename: "another.ts" },
+      ]);
+      expect(mapFindingToInline(diff, { path: "a-moved.ts", line: 2, side })).toBeNull();
+    },
+  );
+
+  it.each(["LEFT", "RIGHT", undefined] as const)(
+    "rejects ambiguous old aliases on side %s",
+    (side) => {
+      const diff = parseGitHubFilePatches([renamed, { ...renamed, filename: "b-moved.ts" }]);
+      expect(mapFindingToInline(diff, { path: "z-original.ts", line: 2, side })).toBeNull();
+    },
+  );
+
+  it("rejects competing LEFT identities in a rename cycle", () => {
+    const diff = parseGitHubFilePatches([
+      renamed,
+      {
+        ...renamed,
+        filename: "z-original.ts",
+        previousFilename: "a-moved.ts",
+      },
+    ]);
+    expect(mapFindingToInline(diff, { path: "z-original.ts", line: 2, side: "LEFT" })).toBeNull();
+  });
+
+  it.each([
+    { patch: null },
+    { truncated: true },
+    { binary: true },
+    { patch: "@@ -0,0 +10,2 @@\n+const replacement = true;\n+newCall();" },
+  ])(
+    "never falls back to an old alias when the current RIGHT target is unusable: %j",
+    (overrides) => {
+      const diff = parseGitHubFilePatches([renamed, { ...recreated, ...overrides }]);
+      expect(
+        mapFindingToInline(diff, { path: "z-original.ts", line: 2, side: "RIGHT" }),
+      ).toBeNull();
+    },
+  );
+
+  it.each([false, true])("distinguishes NFC and NFD paths with reversed order=%s", (reverse) => {
+    const paths = ["caf\u00e9.ts", "cafe\u0301.ts"];
+    const files = paths.map((filename) => ({ ...recreated, filename }));
+    const diff = parseGitHubFilePatches(reverse ? files.reverse() : files);
+    for (const path of paths) {
+      expect(mapFindingToInline(diff, { path, line: 2, side: "RIGHT" })).toEqual({
+        path,
+        line: 2,
+        side: "RIGHT",
+      });
+    }
+  });
+
+  it("does not invent a Unicode-equivalent path absent from the diff", () => {
+    const diff = parseGitHubFilePatches([{ ...recreated, filename: "caf\u00e9.ts" }]);
+    expect(mapFindingToInline(diff, { path: "cafe\u0301.ts", line: 2 })).toBeNull();
+  });
+});
+
 describe("mapFindingToInline", () => {
   const parsed = parseUnifiedDiff(MULTI_HUNK_DIFF);
 

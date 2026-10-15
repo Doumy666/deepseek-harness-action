@@ -152,6 +152,21 @@ describe("reviewResultSchema", () => {
 });
 
 describe("fingerprintFinding", () => {
+  it.each([undefined, "same source context"])(
+    "keeps NFC and NFD file identities distinct with anchor %s",
+    (anchorContext) => {
+      expect(fingerprintFinding({ ...finding({ path: "caf\u00e9.ts" }), anchorContext })).not.toBe(
+        fingerprintFinding({ ...finding({ path: "cafe\u0301.ts" }), anchorContext }),
+      );
+    },
+  );
+
+  it("does not merge Unicode-distinct source anchors in the same file", () => {
+    expect(fingerprintFinding({ ...finding(), anchorContext: 'lookup("caf\u00e9");' })).not.toBe(
+      fingerprintFinding({ ...finding(), anchorContext: 'lookup("cafe\u0301");' }),
+    );
+  });
+
   it("uses source context instead of model prose or line coordinates when available", () => {
     const original = finding();
     const rerun = finding({
