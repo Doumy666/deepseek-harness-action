@@ -1,4 +1,4 @@
-# v0.9.3 profile-based example. Replace the action tag below with its full
+# Profile-based example. Replace the action tag below with its full
 # release commit SHA before production use; keep the validation image immutable.
 name: DSH general task
 

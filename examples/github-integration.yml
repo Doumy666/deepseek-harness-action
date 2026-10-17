@@ -1,4 +1,4 @@
-# v0.9.3 GitHub integration example. Replace the Action tag, maintainer and
+# GitHub integration example. Replace the Action tag, maintainer and
 # assignee placeholders, validation argv, and container image before use.
 name: DSH GitHub integration
 
